@@ -269,6 +269,7 @@ func validateAndGetPaths(path v1beta1.HTTPIngressPath) ([]string, error) {
 
 	validationFuncs := map[v1beta1.PathType]func(path v1beta1.HTTPIngressPath) ([]string, error){
 		v1beta1.PathTypeExact:                  validateExactPathType,
+		v1beta1.PathTypePrefix:                 validateAndModifyPrefixPathType,
 		v1beta1.PathTypeImplementationSpecific: validateImplementationSpecificPathType,
 	}
 
@@ -291,6 +292,33 @@ func validateExactPathType(path v1beta1.HTTPIngressPath) ([]string, error) {
 		return nil, fmt.Errorf("failed to validate exact path %s due to invalid wildcard", path.Path)
 	}
 	return []string{path.Path}, nil
+}
+
+// validateAndModifyPrefixPathType will validate the path provided does not have any wildcards
+// and will return the path unmodified. If the path is in valid, an empty list and error is
+// returned.
+func validateAndModifyPrefixPathType(path v1beta1.HTTPIngressPath) ([]string, error) {
+	if path.Path == "" {
+		return nil, fmt.Errorf("failed to validate prefix path type due to empty path")
+	}
+
+	// The Ingress spec defines Prefx path "/" as matching all paths
+	if path.Path == "/" {
+		return []string{"/*"}, nil
+	}
+
+	if strings.Contains(path.Path, "*") {
+		return nil, fmt.Errorf("failed to validate prefix path %s due to invalid wildcard", path.Path)
+	}
+
+	// Prefix path `/foo` should support requests for `/foo`, `/foo/` and `/foo/bar`. URLMap requires two
+	// path rules 1) `/foo` & 2) `/foo/*` to support all three requests.
+	// Therefore each prefix path should result in two paths for the URLMap, one without a
+	// trailing '/' and one that ends with '/*'
+	if path.Path[len(path.Path)-1] == '/' {
+		return []string{path.Path[0 : len(path.Path)-1], path.Path + "*"}, nil
+	}
+	return []string{path.Path, path.Path + "/*"}, nil
 }
 
 // validateImplementationSpecificPathType checks that the provided path is a valid path for URLMap
