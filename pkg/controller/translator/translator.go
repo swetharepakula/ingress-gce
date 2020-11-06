@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"k8s.io/ingress-gce/pkg/flags"
 
@@ -214,13 +215,21 @@ func (t *Translator) TranslateIngress(ing *v1beta1.Ingress, systemDefaultBackend
 				// The Ingress spec defines empty path as catch-all, so if a user
 				// asks for a single host and multiple empty paths, all traffic is
 				// sent to one of the last backend in the rules list.
-				path := p.Path
-				if path == "" {
-					path = DefaultPath
+
+				paths, err := validateAndGetPaths(p)
+				if err != nil {
+					errs = append(errs, err)
+					continue
 				}
-				pathRules = append(pathRules, utils.PathRule{Path: path, Backend: *svcPort})
+				for _, path := range paths {
+					if path == "" {
+						path = DefaultPath
+					}
+					pathRules = append(pathRules, utils.PathRule{Path: path, Backend: *svcPort})
+				}
 			}
 		}
+
 		host := rule.Host
 		if host == "" {
 			host = DefaultHost
@@ -247,6 +256,49 @@ func (t *Translator) TranslateIngress(ing *v1beta1.Ingress, systemDefaultBackend
 
 	errs = append(errs, fmt.Errorf("failed to retrieve the system default backend service %q with port %q: %v", systemDefaultBackend.Service.String(), systemDefaultBackend.Port.String(), err))
 	return urlMap, errs
+}
+
+// validateAndGetPaths will validate the path based on the specifed path type and will return the
+// the path rules that should be used. If no path type is provided, the path type will be assumed
+// to be ImplementationSpecific. If a non existent path type is provided, an error will be returned.
+func validateAndGetPaths(path v1beta1.HTTPIngressPath) ([]string, error) {
+	pathType := v1beta1.PathTypeImplementationSpecific
+	if path.PathType != nil {
+		pathType = *path.PathType
+	}
+
+	validationFuncs := map[v1beta1.PathType]func(path v1beta1.HTTPIngressPath) ([]string, error){
+		v1beta1.PathTypeImplementationSpecific: validateImplementationSpecificPathType,
+	}
+
+	if validateFunc, ok := validationFuncs[pathType]; ok {
+		return validateFunc(path)
+	}
+	// Path type is validated by the admission controller, so this error will only be thrown
+	// if a path type that is supported by the Ingress spec but not by this controller
+	return nil, fmt.Errorf("failed to process path %s: invalid path type %s", path.Path, pathType)
+}
+
+// validateImplementationSpecificPathType checks that the provided path is a valid path for URLMap
+// and returns the path unmodified.
+func validateImplementationSpecificPathType(path v1beta1.HTTPIngressPath) ([]string, error) {
+	numWildcards := strings.Count(path.Path, "*")
+	if numWildcards == 0 {
+		return []string{path.Path}, nil
+	}
+
+	// Check if more than 1 wildcard exists
+	if numWildcards > 1 {
+		return nil, fmt.Errorf("failed to validate implementation specific path: too many wildcards present in path %s", path.Path)
+	}
+
+	// Check if last element is wildcard
+	pathLen := len(path.Path)
+	if string(path.Path[pathLen-2:pathLen]) != "/*" {
+		return nil, fmt.Errorf("failed to validate implementation specific path: wildcard incorrectly used in path %s", path.Path)
+	}
+
+	return []string{path.Path}, nil
 }
 
 func getZone(n *api_v1.Node) string {
