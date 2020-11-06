@@ -268,6 +268,7 @@ func validateAndGetPaths(path v1beta1.HTTPIngressPath) ([]string, error) {
 	}
 
 	validationFuncs := map[v1beta1.PathType]func(path v1beta1.HTTPIngressPath) ([]string, error){
+		v1beta1.PathTypeExact:                  validateExactPathType,
 		v1beta1.PathTypeImplementationSpecific: validateImplementationSpecificPathType,
 	}
 
@@ -277,6 +278,19 @@ func validateAndGetPaths(path v1beta1.HTTPIngressPath) ([]string, error) {
 	// Path type is validated by the admission controller, so this error will only be thrown
 	// if a path type that is supported by the Ingress spec but not by this controller
 	return nil, fmt.Errorf("failed to process path %s: invalid path type %s", path.Path, pathType)
+}
+
+// validateExactPathType will validate the path provided does not have any wildcards and will
+// return the path unmodified. If the path is in valid, an empty list and error is returned.
+func validateExactPathType(path v1beta1.HTTPIngressPath) ([]string, error) {
+	if path.Path == "" {
+		return nil, fmt.Errorf("failed to validate exact path type due to empty path")
+	}
+
+	if strings.Contains(path.Path, "*") {
+		return nil, fmt.Errorf("failed to validate exact path %s due to invalid wildcard", path.Path)
+	}
+	return []string{path.Path}, nil
 }
 
 // validateImplementationSpecificPathType checks that the provided path is a valid path for URLMap
