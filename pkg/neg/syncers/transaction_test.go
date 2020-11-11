@@ -1217,7 +1217,7 @@ func newTestTransactionSyncer(fakeGCE negtypes.NetworkEndpointGroupCloud, negTyp
 		DefaultBackendSvcPort: defaultBackend,
 	}
 
-	context := context.NewControllerContext(nil, kubeClient, backendConfigClient, nil, negClient, nil, namer, kubeSystemUID, ctxConfig)
+	context := context.NewControllerContext(nil, kubeClient, backendConfigClient, nil, negClient, nil, nil, namer, kubeSystemUID, ctxConfig)
 	svcPort := negtypes.NegSyncerKey{
 		Namespace: testNamespace,
 		Name:      testService,

@@ -90,7 +90,7 @@ func NewTestSyncerManagerWithNegClient(kubeClient kubernetes.Interface, svcNegCl
 		ResyncPeriod:          0 * time.Second,
 		DefaultBackendSvcPort: defaultBackend,
 	}
-	context := context.NewControllerContext(nil, kubeClient, backendConfigClient, nil, svcNegClient, gce.NewFakeGCECloud(gce.DefaultTestClusterValues()), namer, KubeSystemUID, ctxConfig)
+	context := context.NewControllerContext(nil, kubeClient, backendConfigClient, nil, svcNegClient, nil, gce.NewFakeGCECloud(gce.DefaultTestClusterValues()), namer, KubeSystemUID, ctxConfig)
 
 	var svcNegInformer cache.Indexer
 	if svcNegClient != nil {
