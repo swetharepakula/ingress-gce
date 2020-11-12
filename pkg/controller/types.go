@@ -22,6 +22,8 @@ import (
 	"k8s.io/ingress-gce/pkg/utils"
 )
 
+const GCPIngressControllerKey = "networking.gke.io/ingress-controller"
+
 // syncState is used by the controller to maintain state for routines that sync GCP resources of an Ingress.
 type syncState struct {
 	urlMap *utils.GCEURLMap
