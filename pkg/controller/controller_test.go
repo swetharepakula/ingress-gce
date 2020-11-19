@@ -32,16 +32,19 @@ import (
 	api_v1 "k8s.io/api/core/v1"
 	"k8s.io/api/networking/v1beta1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/ingress-gce/pkg/annotations"
+	apisingparams "k8s.io/ingress-gce/pkg/apis/ingparams"
 	backendconfigclient "k8s.io/ingress-gce/pkg/backendconfig/client/clientset/versioned/fake"
 	"k8s.io/ingress-gce/pkg/common/operator"
 	"k8s.io/ingress-gce/pkg/context"
 	"k8s.io/ingress-gce/pkg/events"
 	"k8s.io/ingress-gce/pkg/flags"
+	ingparamsclient "k8s.io/ingress-gce/pkg/ingparams/client/clientset/versioned/fake"
 	"k8s.io/ingress-gce/pkg/instances"
 	"k8s.io/ingress-gce/pkg/loadbalancers"
 	"k8s.io/ingress-gce/pkg/test"
@@ -62,6 +65,7 @@ var (
 func newLoadBalancerController() *LoadBalancerController {
 	kubeClient := fake.NewSimpleClientset()
 	backendConfigClient := backendconfigclient.NewSimpleClientset()
+	ingParamsClient := ingparamsclient.NewSimpleClientset()
 	fakeGCE := gce.NewFakeGCECloud(gce.DefaultTestClusterValues())
 
 	(fakeGCE.Compute().(*cloud.MockGCE)).MockGlobalForwardingRules.InsertHook = loadbalancers.InsertGlobalForwardingRuleHook
@@ -74,7 +78,7 @@ func newLoadBalancerController() *LoadBalancerController {
 		DefaultBackendSvcPort: test.DefaultBeSvcPort,
 		HealthCheckPath:       "/",
 	}
-	ctx := context.NewControllerContext(nil, kubeClient, backendConfigClient, nil, nil, nil, fakeGCE, namer, "" /*kubeSystemUID*/, ctxConfig)
+	ctx := context.NewControllerContext(nil, kubeClient, backendConfigClient, nil, nil, ingParamsClient, fakeGCE, namer, "" /*kubeSystemUID*/, ctxConfig)
 	lbc := NewLoadBalancerController(ctx, stopCh)
 	// TODO(rramkumar): Fix this so we don't have to override with our fake
 	lbc.instancePool = instances.NewNodePool(instances.NewFakeInstanceGroups(sets.NewString(), namer), namer, &test.FakeRecorderSource{})
@@ -988,6 +992,117 @@ func TestGC(t *testing.T) {
 	}
 }
 
+func TestEnsureGCPIngressClasses(t *testing.T) {
+	groupName := apisingparams.GroupName
+	expectedExternalClass := &v1beta1.IngressClass{
+		ObjectMeta: v1.ObjectMeta{
+			Name: GCPExternalClassName,
+		},
+		Spec: v1beta1.IngressClassSpec{
+			Controller: GCPIngressControllerKey,
+			Parameters: &api_v1.TypedLocalObjectReference{
+				APIGroup: &groupName,
+				Kind:     "GCPIngressParams",
+				Name:     GCPExternalClassName,
+			},
+		},
+	}
+
+	expectedInternalClass := &v1beta1.IngressClass{
+		ObjectMeta: v1.ObjectMeta{
+			Name: GCPInternalClassName,
+		},
+		Spec: v1beta1.IngressClassSpec{
+			Controller: GCPIngressControllerKey,
+			Parameters: &api_v1.TypedLocalObjectReference{
+				APIGroup: &groupName,
+				Kind:     "GCPIngressParams",
+				Name:     GCPInternalClassName,
+			},
+		},
+	}
+
+	testcases := []struct {
+		desc                  string
+		defaultExists         bool
+		incorrectClassesExist bool
+		correctClassesExist   bool
+	}{
+		{
+			desc:          "no default ingress class exists, gcp ingress classes don't exist",
+			defaultExists: false,
+		},
+		{
+			desc:          "default ingress class exists, gcp ingress classes don't exist",
+			defaultExists: true,
+		},
+		{
+			desc:                  "no default ingress class exists, gcp ingress classes are incorrect",
+			defaultExists:         false,
+			incorrectClassesExist: true,
+		},
+		{
+			desc:                  "default ingress class exists, gcp ingress classes are incorrect",
+			defaultExists:         true,
+			incorrectClassesExist: true,
+		},
+		{
+			desc:                "no default ingress class exists, gcp ingress classes exist",
+			defaultExists:       false,
+			correctClassesExist: true,
+		},
+		{
+			desc:                "default ingress class exists, gcp ingress classes exist",
+			defaultExists:       true,
+			correctClassesExist: true,
+		},
+	}
+
+	for _, tc := range testcases {
+		lbc := newLoadBalancerController()
+		testClass := testIngressClass(tc.defaultExists)
+		lbc.ingClassLister.Add(testClass)
+
+		var extClassAnnotations map[string]string
+		if !tc.defaultExists {
+			extClassAnnotations = map[string]string{
+				v1beta1.AnnotationIsDefaultIngressClass: "true",
+			}
+		}
+		expectedExternalClass.Annotations = extClassAnnotations
+
+		if tc.correctClassesExist {
+			existingExtClass := expectedExternalClass.DeepCopy()
+			existingIntClass := expectedInternalClass.DeepCopy()
+			if tc.incorrectClassesExist {
+				existingExtClass.Spec.Controller = "wrong-controller-name"
+				existingIntClass.Spec.Controller = "wrong-controller-name"
+			}
+			lbc.ingClassLister.Add(existingExtClass)
+			lbc.ingClassLister.Add(existingIntClass)
+		}
+
+		lbc.ensureGCPIngressClasses()
+		externalClass, err := lbc.ctx.KubeClient.NetworkingV1beta1().IngressClasses().Get(context2.TODO(), GCPExternalClassName, meta_v1.GetOptions{})
+		if err != nil {
+			t.Fatalf("%s: failed to get external ingress class: %s", tc.desc, err)
+		}
+
+		if !reflect.DeepEqual(externalClass, expectedExternalClass) {
+			t.Errorf("%s: external gcp ingress class not as expected", tc.desc)
+		}
+
+		internalClass, err := lbc.ctx.KubeClient.NetworkingV1beta1().IngressClasses().Get(context2.TODO(), GCPInternalClassName, meta_v1.GetOptions{})
+		if err != nil {
+			t.Fatalf("%s: failed to get internal ingress class: %s", tc.desc, err)
+		}
+
+		if !reflect.DeepEqual(internalClass, expectedInternalClass) {
+			t.Errorf("%s: internal gcp ingress class not as expected", tc.desc)
+		}
+	}
+}
+
 // ensureIngress creates an ingress and syncs it with ingress controller.
 // This returns updated ingress after sync.
 func ensureIngress(t *testing.T, lbc *LoadBalancerController, namespace, name string, scheme namer_util.Scheme) *v1beta1.Ingress {
@@ -1024,4 +1139,23 @@ func getUpdatedIngress(t *testing.T, lbc *LoadBalancerController, ing *v1beta1.I
 		t.Fatalf("lbc.ctx.KubeClient...Get(%v) = %v, want nil", getKey(ing, t), err)
 	}
 	return updatedIng
+}
+
+func testIngressClass(defaultClass bool) *v1beta1.IngressClass {
+	var annotations map[string]string
+	if defaultClass {
+		annotations = map[string]string{
+			v1beta1.AnnotationIsDefaultIngressClass: "true",
+		}
+	}
+
+	return &v1beta1.IngressClass{
+		ObjectMeta: v1.ObjectMeta{
+			Name:        "my-ingress-class",
+			Annotations: annotations,
+		},
+		Spec: v1beta1.IngressClassSpec{
+			Controller: "some-controller",
+		},
+	}
 }

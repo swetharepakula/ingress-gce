@@ -22,7 +22,15 @@ import (
 	"k8s.io/ingress-gce/pkg/utils"
 )
 
-const GCPIngressControllerKey = "networking.gke.io/ingress-controller"
+const (
+	GCPIngressControllerKey = "networking.gke.io/ingress-controller"
+
+	// GCPExternalClassName is the name of the external load balacning ingress class
+	GCPExternalClassName = "gcp-external"
+
+	// GCPInternalClassName is the name of the internal load balacning ingress class
+	GCPInternalClassName = "gcp-internal"
+)
 
 // syncState is used by the controller to maintain state for routines that sync GCP resources of an Ingress.
 type syncState struct {

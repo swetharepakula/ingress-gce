@@ -62,6 +62,7 @@ type ControllerContext struct {
 	KubeConfig            *rest.Config
 	KubeClient            kubernetes.Interface
 	SvcNegClient          svcnegclient.Interface
+	IngParamsClient       ingparamsclient.Interface
 	DestinationRuleClient dynamic.NamespaceableResourceInterface
 
 	Cloud *gce.Cloud
@@ -126,6 +127,7 @@ func NewControllerContext(
 		KubeConfig:              kubeConfig,
 		KubeClient:              kubeClient,
 		SvcNegClient:            svcnegClient,
+		IngParamsClient:         ingParamsClient,
 		Cloud:                   cloud,
 		ClusterNamer:            clusterNamer,
 		L4Namer:                 namer.NewL4Namer(string(kubeSystemUID), clusterNamer),

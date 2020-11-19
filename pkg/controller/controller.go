@@ -17,9 +17,11 @@ limitations under the License.
 package controller
 
 import (
+	context2 "context"
 	"fmt"
 	"net/http"
 	"reflect"
+	"strconv"
 	"sync"
 	"time"
 
@@ -27,6 +29,7 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/api/networking/v1beta1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	unversionedcore "k8s.io/client-go/kubernetes/typed/core/v1"
 	listers "k8s.io/client-go/listers/core/v1"
@@ -35,6 +38,7 @@ import (
 	"k8s.io/ingress-gce/pkg/annotations"
 	backendconfigv1 "k8s.io/ingress-gce/pkg/apis/backendconfig/v1"
 	frontendconfigv1beta1 "k8s.io/ingress-gce/pkg/apis/frontendconfig/v1beta1"
+	ingparamsv1beta1 "k8s.io/ingress-gce/pkg/apis/ingparams/v1beta1"
 	"k8s.io/ingress-gce/pkg/backends"
 	"k8s.io/ingress-gce/pkg/common/operator"
 	"k8s.io/ingress-gce/pkg/context"
@@ -805,6 +809,101 @@ func (lbc *LoadBalancerController) ensureFinalizer(ing *v1beta1.Ingress) (*v1bet
 		return nil, err
 	}
 	return updatedIng, nil
+}
+
+func (lbc *LoadBalancerController) ensureGCPIngressClasses() {
+	classes := lbc.ingClassLister.List()
+
+	defaultAlreadySet := false
+	for _, obj := range classes {
+		class := obj.(*v1beta1.IngressClass)
+		defaultClass, err := strconv.ParseBool(class.Annotations[v1beta1.AnnotationIsDefaultIngressClass])
+		if err != nil {
+			continue
+		}
+
+		if defaultClass {
+			defaultAlreadySet = true
+			break
+		}
+	}
+
+	lbc.ensureIngressClass(GCPExternalClassName, !defaultAlreadySet, false)
+	lbc.ensureIngressClass(GCPInternalClassName, extParams, false)
+}
+
+func (lbc *LoadBalancerController) ensureIngressClass(name string, defaultClass, internal bool) error {
+	if err := ensureIngressParameters; err != nil {
+		klog.Errorf("failed to ensure ingress parameters for ingress class %s", err)
+		return err
+	}
+
+	groupName := apisingparams.GroupName
+	var annotations map[string]string
+	if defaultClass {
+		annotations = map[string]string{
+			v1beta1.AnnotationIsDefaultIngressClass: "true",
+		}
+	}
+
+	ingClass := &v1beta1.IngressClass{
+		ObjectMeta: v1.ObjectMeta{
+			Name:        name,
+			Annotations: annotations,
+		},
+		Spec: v1beta1.IngressClassSpec{
+			Controller: GCPIngressControllerKey,
+			Parameters: &api_v1.TypedLocalObjectReference{
+				APIGroup: groupName,
+				Kind:     "GCPIngressParams",
+				Name:     name,
+			},
+		},
+	}
+	obj, exists, err := ingClassLister.GetByKey(name)
+	if err != nil {
+		klog.Errorf("failed to retrieve GCPIngressClass %s from store: %v", name, err)
+	}
+
+	if exists {
+		class := obj.(*v1beta1.IngressClass)
+		if reflect.DeepEqual(class.Spec, ingClass.Spec) && reflect.DeepEqual(class.annotations.ingClass.Annotations) {
+			return nil
+		}
+	}
+
+	_, err := lbc.ctx.KubeClient.NetworkingV1beta1().IngressClasses().Create()
+
+	return nil
+}
+
+func (lbc *LoadBalancerController) ensureIngressParameters(name string, internal bool) error {
+
+	ingParams := &ingparamsv1beta1.GCPIngressParams{
+		ObjectMeta: v1.ObjectMeta{
+			Name: name,
+		},
+		Spec: ingparamsv1beta1.GCPIngressParamsSpec{Internal: internal},
+	}
+
+	obj, exists, err := lbc.ingParamsLister.GetByKey(name)
+	if err != nil {
+		klog.Errorf("Failed to retrieve GCPIngressParams %s from store: %v", name, err)
+	}
+
+	if exists {
+		params := obj.(*ingparamsv1beta1.GCPIngressParams)
+		if reflect.DeepEqual(ingParams.Spec, params.Spec) {
+			return nil
+		}
+		klog.V(4).Infof("Creating GCPIngressParams %s", name)
+		_, err = lbc.ctx.IngParamsClient.NetworkingV1beta1().GCPIngressParamses().Create(context2.Background(), ingParams, metav1.CreateOptions{})
+		return err
+	}
+
+	klog.V(4).Infof("Creating GCPIngressParams %s", name)
+	_, err = lbc.ctx.IngParamsClient.NetworkingV1beta1().GCPIngressParamses().Create(context2.Background(), ingParams, metav1.CreateOptions{})
+	return err
 }
 
 // frontendGCAlgorithm returns the naming scheme using which frontend resources needs to be cleanedup.
