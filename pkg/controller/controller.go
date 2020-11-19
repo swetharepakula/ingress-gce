@@ -30,6 +30,7 @@ import (
 	"k8s.io/api/networking/v1beta1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	unversionedcore "k8s.io/client-go/kubernetes/typed/core/v1"
 	listers "k8s.io/client-go/listers/core/v1"
@@ -38,6 +39,7 @@ import (
 	"k8s.io/ingress-gce/pkg/annotations"
 	backendconfigv1 "k8s.io/ingress-gce/pkg/apis/backendconfig/v1"
 	frontendconfigv1beta1 "k8s.io/ingress-gce/pkg/apis/frontendconfig/v1beta1"
+	apisingparams "k8s.io/ingress-gce/pkg/apis/ingparams"
 	ingparamsv1beta1 "k8s.io/ingress-gce/pkg/apis/ingparams/v1beta1"
 	"k8s.io/ingress-gce/pkg/backends"
 	"k8s.io/ingress-gce/pkg/common/operator"
@@ -57,6 +59,7 @@ import (
 	"k8s.io/ingress-gce/pkg/utils"
 	"k8s.io/ingress-gce/pkg/utils/common"
 	"k8s.io/ingress-gce/pkg/utils/namer"
+	"k8s.io/ingress-gce/pkg/utils/patch"
 	"k8s.io/klog"
 )
 
@@ -326,6 +329,15 @@ func (lbc *LoadBalancerController) Init() {
 // Run starts the loadbalancer controller.
 func (lbc *LoadBalancerController) Run() {
 	klog.Infof("Starting loadbalancer controller")
+
+	if lbc.ctx.IngParamsClient != nil {
+		err := lbc.ensureGCPIngressClasses()
+		if err != nil {
+			klog.Errorf("Failed to ensure GCPIngressClasses: %s", err)
+			return
+		}
+	}
+
 	go lbc.ingQueue.Run()
 	go lbc.nodes.Run()
 
@@ -811,7 +823,14 @@ func (lbc *LoadBalancerController) ensureFinalizer(ing *v1beta1.Ingress) (*v1bet
 	return updatedIng, nil
 }
 
-func (lbc *LoadBalancerController) ensureGCPIngressClasses() {
+// ensureGCPIngressClasses ensures that the GCP Ingress Classes exist and are correct
+// If no default Ingress Class has been set, the controller will add the default class
+// annotation to the `gcp-external` Ingress Class.
+func (lbc *LoadBalancerController) ensureGCPIngressClasses() error {
+	for !lbc.hasSynced() {
+		klog.V(2).Info("waiting for store to sync before ensure GCPIngressClasses")
+		time.Sleep(context.StoreSyncPollPeriod)
+	}
 	classes := lbc.ingClassLister.List()
 
 	defaultAlreadySet := false
@@ -822,61 +841,89 @@ func (lbc *LoadBalancerController) ensureGCPIngressClasses() {
 			continue
 		}
 
+		// Check if defaultClass has been set on an IngressClass that is not gcp-external
 		if defaultClass {
 			defaultAlreadySet = true
 			break
 		}
 	}
 
-	lbc.ensureIngressClass(GCPExternalClassName, !defaultAlreadySet, false)
-	lbc.ensureIngressClass(GCPInternalClassName, extParams, false)
+	var errs []error
+	if err := lbc.ensureIngressClass(GCPExternalClassName, !defaultAlreadySet, false); err != nil {
+		klog.Errorf("Failed to ensure %s Ingress Class: %s", GCPExternalClassName, err)
+		errs = append(errs, fmt.Errorf("failed to ensure %s IngressClass: %s", GCPExternalClassName, err))
+	}
+
+	if err := lbc.ensureIngressClass(GCPInternalClassName, false, true); err != nil {
+		klog.Errorf("Failed to ensure %s Ingress Class: %s", GCPInternalClassName, err)
+		errs = append(errs, fmt.Errorf("failed to ensure %s IngressClass: %s", GCPInternalClassName, err))
+	}
+
+	if len(errs) > 0 {
+		return utils.JoinErrs(errs)
+	}
+	return nil
 }
 
-func (lbc *LoadBalancerController) ensureIngressClass(name string, defaultClass, internal bool) error {
-	if err := ensureIngressParameters; err != nil {
+// ensureIngressClass ensures that an Ingress class exists with the provided name and references
+// an GCPIngressParams that matches specified internal or external load balancing classification.
+// If setDefault = true, ensureIngressClass will ensure that the default annotation exists on
+// the Ingress Class. If setDefault = false, ensureIngressClass will not check the annotations and
+// will not override the default class annotation on the class if it does exist.
+func (lbc *LoadBalancerController) ensureIngressClass(name string, setDefault, internal bool) error {
+	if err := lbc.ensureIngressParameters(name, internal); err != nil {
 		klog.Errorf("failed to ensure ingress parameters for ingress class %s", err)
 		return err
 	}
 
 	groupName := apisingparams.GroupName
-	var annotations map[string]string
-	if defaultClass {
-		annotations = map[string]string{
-			v1beta1.AnnotationIsDefaultIngressClass: "true",
-		}
-	}
-
 	ingClass := &v1beta1.IngressClass{
 		ObjectMeta: v1.ObjectMeta{
-			Name:        name,
-			Annotations: annotations,
+			Name: name,
 		},
 		Spec: v1beta1.IngressClassSpec{
 			Controller: GCPIngressControllerKey,
-			Parameters: &api_v1.TypedLocalObjectReference{
-				APIGroup: groupName,
+			Parameters: &apiv1.TypedLocalObjectReference{
+				APIGroup: &groupName,
 				Kind:     "GCPIngressParams",
 				Name:     name,
 			},
 		},
 	}
-	obj, exists, err := ingClassLister.GetByKey(name)
+	obj, exists, err := lbc.ingClassLister.GetByKey(name)
 	if err != nil {
-		klog.Errorf("failed to retrieve GCPIngressClass %s from store: %v", name, err)
+		klog.Errorf("Failed to retrieve GCPIngressClass %s from store: %v", name, err)
 	}
 
 	if exists {
 		class := obj.(*v1beta1.IngressClass)
-		if reflect.DeepEqual(class.Spec, ingClass.Spec) && reflect.DeepEqual(class.annotations.ingClass.Annotations) {
+		updatedClass := class.DeepCopy()
+
+		needsUpdate := ensureDefaultClassAnnotation(updatedClass, setDefault)
+		needsUpdate = ensureIngressClassSpec(updatedClass, ingClass) || needsUpdate
+
+		if !needsUpdate {
 			return nil
 		}
+
+		patchBytes, err := patch.StrategicMergePatchBytes(class, updatedClass, v1beta1.IngressClass{})
+		if err != nil {
+			klog.Errorf("Failed to create patch for IngressClass %s : %v", name, err)
+			return err
+		}
+		klog.V(4).Infof("Patching Ingress Class %s", name)
+		_, err = lbc.ctx.KubeClient.NetworkingV1beta1().IngressClasses().Patch(context2.Background(), name, types.StrategicMergePatchType, patchBytes, v1.PatchOptions{})
+		return err
 	}
 
-	_, err := lbc.ctx.KubeClient.NetworkingV1beta1().IngressClasses().Create()
-
-	return nil
+	ensureDefaultClassAnnotation(ingClass, setDefault)
+	klog.V(4).Infof("Creating Ingress Class %s", name)
+	_, err = lbc.ctx.KubeClient.NetworkingV1beta1().IngressClasses().Create(context2.Background(), ingClass, v1.CreateOptions{})
+	return err
 }
 
+// ensureIngressParameters ensures that a GCPIngressParams resource exists with the provided name
+// and that its Spec.Internal matches
 func (lbc *LoadBalancerController) ensureIngressParameters(name string, internal bool) error {
 
 	ingParams := &ingparamsv1beta1.GCPIngressParams{
@@ -896,14 +943,58 @@ func (lbc *LoadBalancerController) ensureIngressParameters(name string, internal
 		if reflect.DeepEqual(ingParams.Spec, params.Spec) {
 			return nil
 		}
-		klog.V(4).Infof("Creating GCPIngressParams %s", name)
-		_, err = lbc.ctx.IngParamsClient.NetworkingV1beta1().GCPIngressParamses().Create(context2.Background(), ingParams, metav1.CreateOptions{})
+
+		updatedParams := params.DeepCopy()
+		updatedParams.Spec = ingParams.Spec
+
+		patchBytes, err := patch.MergePatchBytes(params, updatedParams)
+		if err != nil {
+			klog.Errorf("Failed to create patch for GCPIngressParams %s : %v", name, err)
+			return err
+		}
+
+		klog.V(4).Infof("Patching GCP IngressParams %s", name)
+		_, err = lbc.ctx.IngParamsClient.NetworkingV1beta1().GCPIngressParamses().Patch(context2.Background(), name, types.MergePatchType, patchBytes, v1.PatchOptions{})
 		return err
 	}
 
 	klog.V(4).Infof("Creating GCPIngressParams %s", name)
-	_, err = lbc.ctx.IngParamsClient.NetworkingV1beta1().GCPIngressParamses().Create(context2.Background(), ingParams, metav1.CreateOptions{})
+	_, err = lbc.ctx.IngParamsClient.NetworkingV1beta1().GCPIngressParamses().Create(context2.Background(), ingParams, v1.CreateOptions{})
 	return err
+}
+
+// ensureDefaultClassAnnotation ensures that the provided class has the default class
+// annotation set to true if setDefault=false. Otherwise it will not modify the provided class.
+// ensureDefaultClassAnnotation returns true if the provided class was modified.
+func ensureDefaultClassAnnotation(class *v1beta1.IngressClass, setDefault bool) bool {
+	// We should only ensure the default class annotation, if controller is going to set the
+	// annotation. Otherwise we assume user has already defined the class somewhere.
+	if !setDefault {
+		return false
+	}
+
+	defaultSet, err := strconv.ParseBool(class.Annotations[v1beta1.AnnotationIsDefaultIngressClass])
+	if err == nil && defaultSet {
+		return false
+	}
+
+	if class.Annotations == nil {
+		class.Annotations = map[string]string{}
+	}
+	class.Annotations[v1beta1.AnnotationIsDefaultIngressClass] = "true"
+	return true
+}
+
+// ensureIngressClassSpec ensures the provided actual class's spec matches the expected
+// class's spec. If it does not, the actual class's spec will be updated and the function
+// will return true indicating the actual class had been modified.
+func ensureIngressClassSpec(actual, expected *v1beta1.IngressClass) bool {
+	if reflect.DeepEqual(actual, expected) {
+		return false
+	}
+
+	actual.Spec = expected.Spec
+	return true
 }
 
 // frontendGCAlgorithm returns the naming scheme using which frontend resources needs to be cleanedup.
