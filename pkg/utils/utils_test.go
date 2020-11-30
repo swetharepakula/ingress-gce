@@ -464,7 +464,22 @@ func TestGetNodeConditionPredicate(t *testing.T) {
 // Do not run in parallel since modifies global flags
 // TODO(shance): remove l7-ilb flag tests once flag is removed
 func TestIsGCEIngress(t *testing.T) {
-	var wrongClassName = "wrong-class"
+	wrongClassName := "wrong-class"
+	ingressClassName := "some-class"
+	groupName := GCPIngParamsAPIGroup
+
+	ingClassLister, ingParamsLister := setupListers()
+	ingClass := testIngressClass(ingressClassName, GCPIngressControllerKey,
+		&api_v1.TypedLocalObjectReference{
+			APIGroup: &groupName,
+			Kind:     GCPIngParamsKind,
+			Name:     ingressClassName,
+		})
+
+	ingClassLister.Add(ingClass)
+	params := &ingparamsv1beta1.GCPIngressParams{ObjectMeta: v1.ObjectMeta{Name: ingressClassName}}
+	ingParamsLister.Add(params)
+
 	testCases := []struct {
 		desc             string
 		ingress          *v1beta1.Ingress
@@ -561,6 +576,15 @@ func TestIsGCEIngress(t *testing.T) {
 			ingressClassFlag: "right-class",
 			expected:         true,
 		},
+		{
+			desc: "set by IngressClassName specifying a supported Ingress Class",
+			ingress: &v1beta1.Ingress{
+				Spec: v1beta1.IngressSpec{
+					IngressClassName: &ingressClassName,
+				},
+			},
+			expected: true,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -573,9 +597,9 @@ func TestIsGCEIngress(t *testing.T) {
 				flags.F.EnableL7Ilb = true
 			}
 
-			result := IsGCEIngress(tc.ingress)
+			result := IsGCEIngress(tc.ingress, ingClassLister, ingParamsLister)
 			if result != tc.expected {
-				t.Fatalf("want %v, got %v", tc.expected, result)
+				t.Fatalf("%s: want %v, got %v", tc.desc, tc.expected, result)
 			}
 		})
 	}
