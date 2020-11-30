@@ -706,7 +706,7 @@ func TestNeedsCleanup(t *testing.T) {
 				ingress.SetDeletionTimestamp(&ts)
 			}
 
-			if gotNeedsCleanup := NeedsCleanup(ingress); gotNeedsCleanup != tc.expectNeedsCleanup {
+			if gotNeedsCleanup := NeedsCleanup(ingress, nil, nil); gotNeedsCleanup != tc.expectNeedsCleanup {
 				t.Errorf("NeedsCleanup() = %t, want %t (tc = %+v)", gotNeedsCleanup, tc.expectNeedsCleanup, tc)
 			}
 		})

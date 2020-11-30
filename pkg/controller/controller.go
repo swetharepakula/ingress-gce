@@ -132,7 +132,7 @@ func NewLoadBalancerController(
 		lbc.ingParamsLister = ctx.IngParamsInformer.GetIndexer()
 	}
 
-	lbc.ingSyncer = ingsync.NewIngressSyncer(&lbc)
+	lbc.ingSyncer = ingsync.NewIngressSyncer(&lbc, lbc.ingClassLister, lbc.ingParamsLister)
 
 	lbc.ingQueue = utils.NewPeriodicTaskQueue("ingress", "ingresses", lbc.sync)
 
@@ -140,7 +140,7 @@ func NewLoadBalancerController(
 	ctx.IngressInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			addIng := obj.(*v1beta1.Ingress)
-			if !utils.IsGLBCIngress(addIng) {
+			if !utils.IsGLBCIngress(addIng, lbc.ingClassLister, lbc.ingParamsLister) {
 				klog.V(4).Infof("Ignoring add for ingress %v based on annotation %v", common.NamespacedName(addIng), annotations.IngressClassKey)
 				return
 			}
@@ -160,7 +160,7 @@ func NewLoadBalancerController(
 				return
 			}
 
-			if !utils.IsGLBCIngress(delIng) {
+			if !utils.IsGLBCIngress(delIng, lbc.ingClassLister, lbc.ingParamsLister) {
 				klog.V(4).Infof("Ignoring delete for ingress %v based on annotation %v", common.NamespacedName(delIng), annotations.IngressClassKey)
 				return
 			}
@@ -170,7 +170,7 @@ func NewLoadBalancerController(
 		},
 		UpdateFunc: func(old, cur interface{}) {
 			curIng := cur.(*v1beta1.Ingress)
-			if !utils.IsGLBCIngress(curIng) {
+			if !utils.IsGLBCIngress(curIng, lbc.ingClassLister, lbc.ingParamsLister) {
 				// Ingress needs to be enqueued if a ingress finalizer exists.
 				// An existing finalizer means that
 				// 1. Ingress update for class change.
@@ -452,7 +452,9 @@ func (lbc *LoadBalancerController) syncInstanceGroup(ing *v1beta1.Ingress, ingSv
 // GCBackends implements Controller.
 func (lbc *LoadBalancerController) GCBackends(toKeep []*v1beta1.Ingress) error {
 	// Only GCE ingress associated resources are managed by this controller.
-	GCEIngresses := operator.Ingresses(toKeep).Filter(utils.IsGCEIngress).AsList()
+	GCEIngresses := operator.Ingresses(toKeep).Filter(func(ing *v1beta1.Ingress) bool {
+		return utils.IsGCEIngress(ing, lbc.ingClassLister, lbc.ingParamsLister)
+	}).AsList()
 	svcPortsToKeep := lbc.ToSvcPorts(GCEIngresses)
 	if err := lbc.backendSyncer.GC(svcPortsToKeep); err != nil {
 		return err
@@ -562,8 +564,8 @@ func (lbc *LoadBalancerController) sync(key string) error {
 	scope := features.ScopeFromIngress(ing)
 
 	// Determine if the ingress needs to be GCed.
-	if !ingExists || utils.NeedsCleanup(ing) {
-		frontendGCAlgorithm := frontendGCAlgorithm(ingExists, false, ing)
+	if !ingExists || utils.NeedsCleanup(ing, lbc.ingClassLister, lbc.ingParamsLister) {
+		frontendGCAlgorithm := frontendGCAlgorithm(ingExists, false, ing, lbc.ingClassLister, lbc.ingParamsLister)
 		// GC will find GCE resources that were used for this ingress and delete them.
 		err := lbc.ingSyncer.GC(allIngresses, ing, frontendGCAlgorithm, scope)
 		// Skip emitting an event if ingress does not exist as we cannot retrieve ingress namespace.
@@ -626,7 +628,7 @@ func (lbc *LoadBalancerController) sync(key string) error {
 	// Garbage collection will occur regardless of an error occurring. If an error occurred,
 	// it could have been caused by quota issues; therefore, garbage collecting now may
 	// free up enough quota for the next sync to pass.
-	frontendGCAlgorithm := frontendGCAlgorithm(ingExists, oldScope != nil, ing)
+	frontendGCAlgorithm := frontendGCAlgorithm(ingExists, oldScope != nil, ing, lbc.ingClassLister, lbc.ingParamsLister)
 	if gcErr := lbc.ingSyncer.GC(allIngresses, ing, frontendGCAlgorithm, scope); gcErr != nil {
 		lbc.ctx.Recorder(ing.Namespace).Eventf(ing, apiv1.EventTypeWarning, events.GarbageCollection, "Error during garbage collection: %v", gcErr)
 		return fmt.Errorf("error during sync %v, error during GC %v", syncErr, gcErr)
@@ -809,14 +811,14 @@ func (lbc *LoadBalancerController) ensureFinalizer(ing *v1beta1.Ingress) (*v1bet
 //      - Finalizer enabled    :    all backends
 //      - Finalizer disabled   :    v1 frontends and all backends
 //      - Scope changed        :    v2 frontends for all scope
-func frontendGCAlgorithm(ingExists bool, scopeChange bool, ing *v1beta1.Ingress) utils.FrontendGCAlgorithm {
+func frontendGCAlgorithm(ingExists bool, scopeChange bool, ing *v1beta1.Ingress, ingClassLister, ingParamsLister cache.Indexer) utils.FrontendGCAlgorithm {
 	// If ingress does not exist, that means its pre-finalizer era.
 	// Run GC via v1 naming scheme.
 	if !ingExists {
 		return utils.CleanupV1FrontendResources
 	}
 	// Determine if we do not need to delete current ingress.
-	if !utils.NeedsCleanup(ing) {
+	if !utils.NeedsCleanup(ing, ingClassLister, ingParamsLister) {
 		// GC backends only if current ingress does not need cleanup and finalizers is enabled.
 		if flags.F.FinalizerAdd {
 			if scopeChange {

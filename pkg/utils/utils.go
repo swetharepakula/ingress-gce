@@ -330,12 +330,11 @@ func IsGCEL7ILBIngress(ing *v1beta1.Ingress) bool {
 }
 
 // IsGLBCIngress returns true if the given Ingress should be processed by GLBC
-func IsGLBCIngress(ing *v1beta1.Ingress) bool {
-	return IsGCEIngress(ing, nil, nil) || IsGCEMultiClusterIngress(ing)
+func IsGLBCIngress(ing *v1beta1.Ingress, ingClassLister, ingParamsLister cache.Indexer) bool {
+	return IsGCEIngress(ing, ingClassLister, ingParamsLister) || IsGCEMultiClusterIngress(ing)
 }
 
 func IsGCPIngressClass(class *v1beta1.IngressClass, params *ingparamsv1beta1.GCPIngressParams) bool {
-
 	if class == nil || params == nil {
 		return false
 	}
@@ -527,8 +526,8 @@ func ServiceKeyFunc(namespace, name string) string {
 }
 
 // NeedsCleanup returns true if the ingress needs to have its associated resources deleted.
-func NeedsCleanup(ing *v1beta1.Ingress) bool {
-	return common.IsDeletionCandidate(ing.ObjectMeta) || !IsGLBCIngress(ing)
+func NeedsCleanup(ing *v1beta1.Ingress, ingClassLister, ingParamsLister cache.Indexer) bool {
+	return common.IsDeletionCandidate(ing.ObjectMeta) || !IsGLBCIngress(ing, ingClassLister, ingParamsLister)
 }
 
 // HasVIP returns true if given ingress has a vip.
