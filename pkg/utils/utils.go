@@ -324,9 +324,17 @@ func IsGCEMultiClusterIngress(ing *v1beta1.Ingress) bool {
 
 // IsGCEL7ILBIngress returns true if the given Ingress has
 // ingress.class annotation set to "gce-l7-ilb"
-func IsGCEL7ILBIngress(ing *v1beta1.Ingress) bool {
+func IsGCEL7ILBIngress(ing *v1beta1.Ingress, ingParams *ingparamsv1beta1.GCPIngressParams) bool {
+
 	class := annotations.FromIngress(ing).IngressClass()
-	return class == annotations.GceL7ILBIngressClass
+	if class != "" {
+		return class == annotations.GceL7ILBIngressClass
+	}
+
+	if ingParams != nil {
+		return ingParams.Spec.Internal == true
+	}
+	return false
 }
 
 // IsGLBCIngress returns true if the given Ingress should be processed by GLBC
