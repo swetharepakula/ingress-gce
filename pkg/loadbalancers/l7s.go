@@ -63,7 +63,7 @@ func (l *L7s) Ensure(ri *L7RuntimeInfo) (*L7, error) {
 		cloud:       l.cloud,
 		namer:       l.namerFactory.Namer(ri.Ingress),
 		recorder:    l.recorderProducer.Recorder(ri.Ingress.Namespace),
-		scope:       features.ScopeFromIngress(ri.Ingress),
+		scope:       features.ScopeFromIngress(ri.Ingress, ri.IngressParams),
 		ingress:     *ri.Ingress,
 	}
 
@@ -111,7 +111,7 @@ func (l *L7s) list(key *meta.Key, version meta.Version) ([]*composite.UrlMap, er
 func (l *L7s) GCv2(ing *v1beta1.Ingress, scope meta.KeyType) error {
 	ingKey := common.NamespacedName(ing)
 	klog.V(2).Infof("GCv2(%v)", ingKey)
-	if err := l.delete(l.namerFactory.Namer(ing), features.VersionsFromIngress(ing), scope); err != nil {
+	if err := l.delete(l.namerFactory.Namer(ing), features.VersionsFromIngress(ing, l.runtimeInfo.IngressParams), scope); err != nil {
 		return err
 	}
 	klog.V(2).Infof("GCv2(%v) ok", ingKey)
@@ -129,7 +129,7 @@ func (l *L7s) FrontendScopeChangeGC(ing *v1beta1.Ingress) (*meta.KeyType, error)
 
 	namer := l.namerFactory.Namer(ing)
 	urlMapName := namer.UrlMap()
-	currentScope := features.ScopeFromIngress(ing)
+	currentScope := features.ScopeFromIngress(ing, l.runtimeInfo.IngressParams)
 
 	for _, scope := range []meta.KeyType{meta.Global, meta.Regional} {
 		if scope != currentScope {
@@ -139,7 +139,7 @@ func (l *L7s) FrontendScopeChangeGC(ing *v1beta1.Ingress) (*meta.KeyType, error)
 			}
 
 			// Look for existing LBs with the same name but of a different scope
-			_, err = composite.GetUrlMap(l.cloud, key, features.VersionsFromIngress(ing).UrlMap)
+			_, err = composite.GetUrlMap(l.cloud, key, features.VersionsFromIngress(ing, l.runtimeInfo.IngressParams).UrlMap)
 			if err == nil {
 				klog.V(2).Infof("GC'ing ing %v for scope %q", ing, scope)
 				return &scope, nil
@@ -230,7 +230,7 @@ func (l *L7s) Shutdown(ings []*v1beta1.Ingress) error {
 		return namer_util.FrontendNamingScheme(ing) == namer_util.V2NamingScheme
 	}).AsList()
 	for _, ing := range v2Ings {
-		if err := l.GCv2(ing, features.ScopeFromIngress(ing)); err != nil {
+		if err := l.GCv2(ing, features.ScopeFromIngress(ing, l.runtimeInfo.IngressParams)); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -244,11 +244,11 @@ func (l *L7s) Shutdown(ings []*v1beta1.Ingress) error {
 // HasUrlMap implements LoadBalancerPool.
 func (l *L7s) HasUrlMap(ing *v1beta1.Ingress) (bool, error) {
 	namer := l.namerFactory.Namer(ing)
-	key, err := composite.CreateKey(l.cloud, namer.UrlMap(), features.ScopeFromIngress(ing))
+	key, err := composite.CreateKey(l.cloud, namer.UrlMap(), features.ScopeFromIngress(ing, l.runtimeInfo.IngressParams))
 	if err != nil {
 		return false, err
 	}
-	if _, err := composite.GetUrlMap(l.cloud, key, features.VersionsFromIngress(ing).UrlMap); err != nil {
+	if _, err := composite.GetUrlMap(l.cloud, key, features.VersionsFromIngress(ing, l.runtimeInfo.IngressParams).UrlMap); err != nil {
 		if utils.IsHTTPErrorCode(err, http.StatusNotFound) {
 			return false, nil
 		}

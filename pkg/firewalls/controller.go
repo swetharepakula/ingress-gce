@@ -229,7 +229,8 @@ func (fwc *FirewallController) sync(key string) error {
 func (fwc *FirewallController) ilbFirewallSrcRange(gceIngresses []*v1beta1.Ingress) (string, error) {
 	ilbEnabled := false
 	for _, ing := range gceIngresses {
-		if utils.IsGCEL7ILBIngress(ing) {
+		_, params := utils.GetIngressClassAndParams(ing, fwc.ingClassLister, fwc.ingParamsLister)
+		if utils.IsGCEL7ILBIngress(ing, params) {
 			ilbEnabled = true
 			break
 		}

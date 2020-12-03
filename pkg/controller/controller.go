@@ -561,7 +561,8 @@ func (lbc *LoadBalancerController) sync(key string) error {
 
 	// Capture GC state for ingress.
 	allIngresses := lbc.ctx.Ingresses().List()
-	scope := features.ScopeFromIngress(ing)
+	_, params := utils.GetIngressClassAndParams(ing.Spec.IngressClassName)
+	scope := features.ScopeFromIngress(ing, params)
 
 	// Determine if the ingress needs to be GCed.
 	if !ingExists || utils.NeedsCleanup(ing, lbc.ingClassLister, lbc.ingParamsLister) {
@@ -588,7 +589,7 @@ func (lbc *LoadBalancerController) sync(key string) error {
 	}
 
 	// Bootstrap state for GCP sync.
-	urlMap, errs := lbc.Translator.TranslateIngress(ing, lbc.ctx.DefaultBackendSvcPort.ID, lbc.ctx.ClusterNamer)
+	urlMap, errs := lbc.Translator.TranslateIngress(ing, lbc.ctx.DefaultBackendSvcPort.ID, lbc.ctx.ClusterNamer, lbc.ingClassLister, lbc.ingParamsLister)
 
 	if errs != nil {
 		msg := fmt.Errorf("invalid ingress spec: %v", utils.JoinErrs(errs))
@@ -710,6 +711,8 @@ func (lbc *LoadBalancerController) toRuntimeInfo(ing *v1beta1.Ingress, urlMap *u
 		return nil, err
 	}
 
+	_, params := utils.GetIngressClassAndParams(ing.Spec.IngressClassName, lbc.ingClassLister, lbc.ingParamsLister)
+
 	return &loadbalancers.L7RuntimeInfo{
 		TLS:            tls,
 		TLSName:        annotations.UseNamedTLS(),
@@ -718,6 +721,7 @@ func (lbc *LoadBalancerController) toRuntimeInfo(ing *v1beta1.Ingress, urlMap *u
 		StaticIPName:   staticIPName,
 		UrlMap:         urlMap,
 		FrontendConfig: feConfig,
+		IngressParams:  params,
 	}, nil
 }
 

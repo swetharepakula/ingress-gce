@@ -566,7 +566,12 @@ func (c *Controller) mergeDefaultBackendServicePortInfoMap(key string, service *
 
 	// process default backend service for L7 ILB
 	if flags.F.EnableL7Ilb {
-		if err := scanIngress(utils.IsGCEL7ILBIngress); err != nil {
+		if err := scanIngress(func(ing *v1beta1.Ingress) bool {
+
+			_, params := utils.GetIngressClassAndParams(ing.Spec.IngressClassName, c.ingClassLister, c.ingParamsLister)
+			return utils.IsGCEL7ILBIngress(ing, params)
+
+		}); err != nil {
 			return err
 		}
 	}
