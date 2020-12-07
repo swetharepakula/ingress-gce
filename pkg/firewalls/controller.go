@@ -138,7 +138,7 @@ func NewFirewallController(
 func (fwc *FirewallController) ToSvcPorts(ings []*v1beta1.Ingress) []utils.ServicePort {
 	var knownPorts []utils.ServicePort
 	for _, ing := range ings {
-		urlMap, _ := fwc.translator.TranslateIngress(ing, fwc.ctx.DefaultBackendSvcPort.ID, fwc.ctx.ClusterNamer)
+		urlMap, _ := fwc.translator.TranslateIngress(ing, fwc.ctx.DefaultBackendSvcPort.ID, fwc.ctx.ClusterNamer, fwc.ingClassLister, fwc.ingParamsLister)
 		knownPorts = append(knownPorts, urlMap.AllServicePorts()...)
 	}
 	return knownPorts
@@ -229,7 +229,7 @@ func (fwc *FirewallController) sync(key string) error {
 func (fwc *FirewallController) ilbFirewallSrcRange(gceIngresses []*v1beta1.Ingress) (string, error) {
 	ilbEnabled := false
 	for _, ing := range gceIngresses {
-		_, params := utils.GetIngressClassAndParams(ing, fwc.ingClassLister, fwc.ingParamsLister)
+		_, params := utils.GetIngressClassAndParams(ing.Spec.IngressClassName, fwc.ingClassLister, fwc.ingParamsLister)
 		if utils.IsGCEL7ILBIngress(ing, params) {
 			ilbEnabled = true
 			break

@@ -187,7 +187,7 @@ func (l *L7) edgeHop() error {
 			return err
 		}
 	} else if flags.F.EnableDeleteUnusedFrontends && requireDeleteFrontend(l.ingress, namer.HTTPSProtocol) {
-		if err := l.deleteHttps(features.VersionsFromIngress(&l.ingress, l.runtimInfo.IngressParams)); err != nil {
+		if err := l.deleteHttps(features.VersionsFromIngress(&l.ingress, l.runtimeInfo.IngressParams)); err != nil {
 			return err
 		}
 		klog.V(2).Infof("Successfully deleted unused HTTPS frontend resources for load-balancer %s", l)

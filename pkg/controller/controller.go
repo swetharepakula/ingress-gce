@@ -120,7 +120,6 @@ func NewLoadBalancerController(
 		hasSynced:     ctx.HasSynced,
 		nodes:         NewNodeController(ctx, instancePool),
 		instancePool:  instancePool,
-		l7Pool:        loadbalancers.NewLoadBalancerPool(ctx.Cloud, ctx.ClusterNamer, ctx, namer.NewFrontendNamerFactory(ctx.ClusterNamer, ctx.KubeSystemUID)),
 		backendSyncer: backends.NewBackendSyncer(backendPool, healthChecker, ctx.Cloud),
 		negLinker:     backends.NewNEGLinker(backendPool, negtypes.NewAdapter(ctx.Cloud), ctx.Cloud),
 		igLinker:      backends.NewInstanceGroupLinker(instancePool, backendPool),
@@ -131,6 +130,8 @@ func NewLoadBalancerController(
 		lbc.ingClassLister = ctx.IngClassInformer.GetIndexer()
 		lbc.ingParamsLister = ctx.IngParamsInformer.GetIndexer()
 	}
+
+	lbc.l7Pool = loadbalancers.NewLoadBalancerPool(ctx.Cloud, ctx.ClusterNamer, ctx, namer.NewFrontendNamerFactory(ctx.ClusterNamer, ctx.KubeSystemUID), lbc.ingClassLister, lbc.ingParamsLister)
 
 	lbc.ingSyncer = ingsync.NewIngressSyncer(&lbc, lbc.ingClassLister, lbc.ingParamsLister)
 
@@ -561,7 +562,10 @@ func (lbc *LoadBalancerController) sync(key string) error {
 
 	// Capture GC state for ingress.
 	allIngresses := lbc.ctx.Ingresses().List()
-	_, params := utils.GetIngressClassAndParams(ing.Spec.IngressClassName)
+	var params *ingparamsv1beta1.GCPIngressParams
+	if ingExists {
+		_, params = utils.GetIngressClassAndParams(ing.Spec.IngressClassName, lbc.ingClassLister, lbc.ingParamsLister)
+	}
 	scope := features.ScopeFromIngress(ing, params)
 
 	// Determine if the ingress needs to be GCed.
@@ -744,7 +748,7 @@ func updateAnnotations(client kubernetes.Interface, ing *v1beta1.Ingress, newAnn
 func (lbc *LoadBalancerController) ToSvcPorts(ings []*v1beta1.Ingress) []utils.ServicePort {
 	var knownPorts []utils.ServicePort
 	for _, ing := range ings {
-		urlMap, _ := lbc.Translator.TranslateIngress(ing, lbc.ctx.DefaultBackendSvcPort.ID, lbc.ctx.ClusterNamer)
+		urlMap, _ := lbc.Translator.TranslateIngress(ing, lbc.ctx.DefaultBackendSvcPort.ID, lbc.ctx.ClusterNamer, lbc.ingClassLister, lbc.ingParamsLister)
 		knownPorts = append(knownPorts, urlMap.AllServicePorts()...)
 	}
 	return knownPorts
