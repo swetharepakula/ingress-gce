@@ -20,7 +20,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/ingress-gce/pkg/context"
-	"k8s.io/klog"
 )
 
 // Controller is a private service connect (psc) controller
@@ -37,6 +36,3 @@ func NewController(ctx *context.ControllerContext) *Controller {
 		svcAttachmentQueue: workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
 	}
 }
-
-
-func(*Controller) processServiceAttachment

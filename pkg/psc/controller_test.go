@@ -15,8 +15,23 @@ limitations under the License.
 */
 package psc
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+)
 
 func TestCreation(t *testing.T) {
 	// t.Fatal("not implemented")
+	testNamespace := "test-namespace"
+
+	svc := &v1.Service{
+		Status: v1.ServiceStatus{},
+	}
+
+	kubeClient := fake.NewSimpleClientset()
+	kubeClient.CoreV1().Services(testNamespace).Create(context.TODO(), svc, metav1.CreateOptions{})
 }
