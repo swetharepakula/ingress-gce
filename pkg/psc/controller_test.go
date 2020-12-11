@@ -22,15 +22,25 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/legacy-cloud-providers/gce"
 )
 
 func TestCreation(t *testing.T) {
-	// t.Fatal("not implemented")
 	testNamespace := "test-namespace"
 
 	svc := &v1.Service{
-		Status: v1.ServiceStatus{},
+		Status: v1.ServiceStatus{
+			LoadBalancer: v1.LoadBalancerStatus{
+				Ingress: []v1.LoadBalancerIngress{
+					{
+						IP: "1.2.3.4",
+					},
+				},
+			},
+		},
 	}
+
+	fakeCloud := gce.NewFakeGCECloud(gce.DefaultTestClusterValues())
 
 	kubeClient := fake.NewSimpleClientset()
 	kubeClient.CoreV1().Services(testNamespace).Create(context.TODO(), svc, metav1.CreateOptions{})
