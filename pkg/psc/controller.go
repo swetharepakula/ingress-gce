@@ -34,5 +34,10 @@ func NewController(ctx *context.ControllerContext) *Controller {
 	return &Controller{
 		client:             ctx.KubeClient,
 		svcAttachmentQueue: workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
+		// svcAttachmentLister: ctx.
 	}
+}
+
+func processService(key string) error {
+
 }
