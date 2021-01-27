@@ -31,7 +31,13 @@ import (
 	"k8s.io/ingress-gce/pkg/context"
 	serviceattachmentclient "k8s.io/ingress-gce/pkg/serviceattachment/client/clientset/versioned"
 	"k8s.io/ingress-gce/pkg/utils/namer"
+	"k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/legacy-cloud-providers/gce"
+)
+
+const (
+	svcAPIGroup = "v1"
+	svcKind     = "service"
 )
 
 // Controller is a private service connect (psc) controller
@@ -72,7 +78,7 @@ func (c *Controller) processServiceAttachment(key string) error {
 	// TODO: how to deal with doesn't exist
 	obj, exists, err := c.svcAttachmentLister.GetByKey(key)
 	if err != nil {
-		return err
+		return fmt.Errorf("Errored getting service from store: %q", err)
 	}
 
 	if !exists {
@@ -86,7 +92,9 @@ func (c *Controller) processServiceAttachment(key string) error {
 		return fmt.Errorf("Failed processing ServiceAttachment %s/%s: Invalid connection preference: %s", namespace, name, err)
 	}
 
-	//TODO make sure reference is a service
+	if err = validateResourceReference(svcAttachment.Spec.ResourceReference); err != nil {
+		return err
+	}
 
 	frURL, err := c.getForwardingRule(namespace, svcAttachment.Spec.ResourceReference.Name)
 	if err != nil {
@@ -135,4 +143,15 @@ func (c *Controller) getForwardingRule(namespace, svcName string) (string, error
 	}
 
 	return fwdRule.SelfLink, nil
+}
+
+func validateResourceReference(ref *core.TypedLocalObjectReference) error {
+	if ref.APIGroup == nil {
+		return fmt.Errorf("APIGroup should not be nil")
+	}
+
+	if *ref.APIGroup != svcAPIGroup || ref.Kind != svcKind {
+		return fmt.Errorf("Invalid resource reference. Only APIGroup: %s and Kind: %s are valid", svcAPIGroup, svcKind)
+	}
+	return nil
 }

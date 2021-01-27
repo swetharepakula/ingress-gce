@@ -48,6 +48,12 @@ func TestCreation(t *testing.T) {
 	saName := "my-sa"
 	svcName := "my-service"
 	frName := "test-fr"
+	apiGroup := "v1"
+	validRef := &core.TypedLocalObjectReference{
+		APIGroup: &apiGroup,
+		Kind:     "service",
+		Name:     svcName,
+	}
 
 	testCases := []struct {
 		desc                 string
@@ -55,6 +61,7 @@ func TestCreation(t *testing.T) {
 		svcExists            bool
 		fwdRuleExists        bool
 		connectionPreference string
+		resourceRef          *core.TypedLocalObjectReference
 		expectErr            bool
 	}{
 		{
@@ -63,6 +70,7 @@ func TestCreation(t *testing.T) {
 			svcExists:            true,
 			fwdRuleExists:        true,
 			connectionPreference: "acceptAutomatic",
+			resourceRef:          validRef,
 			expectErr:            false,
 		},
 		{
@@ -71,6 +79,7 @@ func TestCreation(t *testing.T) {
 			svcExists:            true,
 			fwdRuleExists:        true,
 			connectionPreference: "acceptAutomatic",
+			resourceRef:          validRef,
 			expectErr:            false,
 		},
 		{
@@ -79,21 +88,54 @@ func TestCreation(t *testing.T) {
 			svcExists:            true,
 			fwdRuleExists:        true,
 			connectionPreference: "acceptAutomatic",
+			resourceRef:          validRef,
 			expectErr:            true,
 		},
 		{
 			desc:                 "service does not exist",
 			svcExists:            false,
 			connectionPreference: "acceptAutomatic",
+			resourceRef:          validRef,
 			expectErr:            true,
 		},
 		{
 			desc:                 "forwarding rule does not exist",
 			annotationKey:        annotations.TCPForwardingRuleKey,
-			svcExists:            false,
-			fwdRuleExists:        true,
+			svcExists:            true,
+			fwdRuleExists:        false,
 			connectionPreference: "acceptAutomatic",
+			resourceRef:          validRef,
 			expectErr:            true,
+		},
+		{
+			desc:                 "accept automatic wrong format",
+			annotationKey:        annotations.TCPForwardingRuleKey,
+			svcExists:            true,
+			fwdRuleExists:        true,
+			connectionPreference: "ACCEPT_AUTOMATIC",
+			resourceRef:          validRef,
+			expectErr:            true,
+		},
+		{
+			desc:                 "invalid connection preference",
+			annotationKey:        annotations.TCPForwardingRuleKey,
+			svcExists:            true,
+			fwdRuleExists:        true,
+			connectionPreference: "some connection preference",
+			resourceRef:          validRef,
+			expectErr:            true,
+		},
+		{
+			desc:                 "invalid resource reference",
+			annotationKey:        annotations.TCPForwardingRuleKey,
+			svcExists:            false,
+			connectionPreference: "some connection preference",
+			resourceRef: &core.TypedLocalObjectReference{
+				APIGroup: &apiGroup,
+				Kind:     "not-service",
+				Name:     svcName,
+			},
+			expectErr: true,
 		},
 	}
 
@@ -115,13 +157,12 @@ func TestCreation(t *testing.T) {
 			controller.serviceLister.Add(svc)
 		}
 
-		key, err := composite.CreateKey(fakeCloud, frName, meta.Regional)
-		if err != nil {
-			t.Errorf("%s: Unexpected error when creating key - %v", tc.desc, err)
-		}
-
 		var rule *composite.ForwardingRule
 		if tc.fwdRuleExists {
+			key, err := composite.CreateKey(fakeCloud, frName, meta.Regional)
+			if err != nil {
+				t.Errorf("%s: Unexpected error when creating key - %v", tc.desc, err)
+			}
 			// Create a ForwardingRule that matches
 			fwdRule := &composite.ForwardingRule{
 				Name:                frName,
@@ -137,7 +178,6 @@ func TestCreation(t *testing.T) {
 			}
 		}
 
-		apiGroup := "v1"
 		saCR := &sav1alpha1.ServiceAttachment{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: testNamespace,
@@ -147,28 +187,23 @@ func TestCreation(t *testing.T) {
 			Spec: sav1alpha1.ServiceAttachmentSpec{
 				ConnectionPreference: tc.connectionPreference,
 				NATSubnets:           []string{"my-subnet"},
-				ResourceReference: &core.TypedLocalObjectReference{
-					APIGroup: &apiGroup,
-					Kind:     "service",
-					Name:     svcName,
-				},
+				ResourceReference:    tc.resourceRef,
 			},
 		}
 
 		controller.svcAttachmentLister.Add(saCR)
 
-		connPref, err := GetConnectionPreference(tc.connectionPreference)
-		if err != nil {
-			t.Errorf("%s: Failed to get connection preference: %q", tc.desc, err)
-		}
-
-		err = controller.processServiceAttachment(SvcAttachmentKeyFunc(testNamespace, saName))
+		err := controller.processServiceAttachment(SvcAttachmentKeyFunc(testNamespace, saName))
 		if tc.expectErr && err == nil {
 			t.Errorf("%s: expected an error when process service attachment", tc.desc)
 		} else if !tc.expectErr && err != nil {
 			t.Errorf("%s: unexpected error processing Service Attachment: %s", tc.desc, err)
 		} else if !tc.expectErr {
 			gceSAName := controller.saNamer.ServiceAttachment(testNamespace, saName, string(saCR.UID))
+			connPref, err := GetConnectionPreference(tc.connectionPreference)
+			if err != nil {
+				t.Errorf("%s: Failed to get connection preference: %q", tc.desc, err)
+			}
 			expectedSA := &alpha.ServiceAttachment{
 				ConnectionPreference:   connPref,
 				Description:            "",
