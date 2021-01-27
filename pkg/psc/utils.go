@@ -17,16 +17,24 @@ limitations under the License.
 package psc
 
 import (
-	"context"
-
-	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud/filter"
-	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud/meta"
-	alpha "google.golang.org/api/compute/v0.alpha"
+	"fmt"
+	"strings"
 )
 
-type ServiceAttachmentCloud interface {
-	Get(ctx context.Context, key *meta.Key) (*alpha.ServiceAttachment, error)
-	List(ctx context.Context, fl *filter.F) ([]*alpha.ServiceAttachment, error)
-	Insert(ctx context.Context, key *meta.Key, obj *alpha.ServiceAttachment) error
-	Delete(ctx context.Context, key *meta.Key) error
+const (
+	ConnPreferenceAcceptAutomatic = "ACCEPT_AUTOMATIC"
+)
+
+func SvcAttachmentKeyFunc(namespace, name string) string {
+	return fmt.Sprintf("%s/%s", namespace, name)
+}
+
+func GetConnectionPreference(connPreference string) (string, error) {
+	switch strings.TrimSpace(connPreference) {
+	case "acceptAutomatic":
+		return ConnPreferenceAcceptAutomatic, nil
+	default:
+		return "", fmt.Errorf("Invalid Connection Preference: %s", connPreference)
+
+	}
 }

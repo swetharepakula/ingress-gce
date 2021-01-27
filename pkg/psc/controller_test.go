@@ -1,5 +1,5 @@
 /*
-Copyright 2020 The Kubernetes Authors.
+Copyright 2021 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,9 +16,10 @@ limitations under the License.
 package psc
 
 import (
-	"context"
+	context2 "context"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud"
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud/meta"
@@ -26,34 +27,20 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/ingress-gce/pkg/annotations"
 	sav1alpha1 "k8s.io/ingress-gce/pkg/apis/serviceattachment/v1alpha1"
 	"k8s.io/ingress-gce/pkg/composite"
+	"k8s.io/ingress-gce/pkg/context"
+	safake "k8s.io/ingress-gce/pkg/serviceattachment/client/clientset/versioned/fake"
+	"k8s.io/ingress-gce/pkg/test"
 	"k8s.io/ingress-gce/pkg/utils/namer"
 	"k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/legacy-cloud-providers/gce"
 )
 
-// func getFakeGCECloud(vals gce.TestClusterValues) *gce.Cloud {
-// 	fakeGCE := gce.NewFakeGCECloud(vals)
-
-// // 	GetHook    func(ctx context.Context, key *meta.Key, m *MockAlphaServiceAttachments) (bool, *alpha.ServiceAttachment, error)
-// // 	ListHook   func(ctx context.Context, fl *filter.F, m *MockAlphaServiceAttachments) (bool, []*alpha.ServiceAttachment, error)
-// // 	InsertHook func(ctx context.Context, key *meta.Key, obj *alpha.ServiceAttachment, m *MockAlphaServiceAttachments) (bool, error)
-// // 	DeleteHook func(ctx context.Context, key *meta.Key, m *MockAlphaServiceAttachments) (bool, error)
-// 	// InsertHook required to assign an IP Address for forwarding rule
-// 	// (fakeGCE.Compute().(*cloud.MockGCE)).MockAlphaServiceAttachments.InsertHook = mock.InsertAddressHook
-// 	// (fakeGCE.Compute().(*cloud.MockGCE)).MockAlphaAddresses.X = mock.AddressAttributes{}
-// 	// (fakeGCE.Compute().(*cloud.MockGCE)).MockAddresses.X = mock.AddressAttributes{}
-// 	// (fakeGCE.Compute().(*cloud.MockGCE)).MockForwardingRules.InsertHook = mock.InsertFwdRuleHook
-
-// 	// (fakeGCE.Compute().(*cloud.MockGCE)).MockRegionBackendServices.UpdateHook = mock.UpdateRegionBackendServiceHook
-// 	// (fakeGCE.Compute().(*cloud.MockGCE)).MockHealthChecks.UpdateHook = mock.UpdateHealthCheckHook
-// 	// (fakeGCE.Compute().(*cloud.MockGCE)).MockFirewalls.UpdateHook = mock.UpdateFirewallHook
-// 	return fakeGCE
-// }
-
 const (
-	ClusterID = "cluster-id"
+	ClusterID     = "cluster-id"
+	kubeSystemUID = "kube-system-uid"
 )
 
 func TestCreation(t *testing.T) {
@@ -62,85 +49,169 @@ func TestCreation(t *testing.T) {
 	svcName := "my-service"
 	frName := "test-fr"
 
-	svc := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      svcName,
+	testCases := []struct {
+		desc                 string
+		annotationKey        string
+		svcExists            bool
+		fwdRuleExists        bool
+		connectionPreference string
+		expectErr            bool
+	}{
+		{
+			desc:                 "valid service attachment with tcp ILB",
+			annotationKey:        annotations.TCPForwardingRuleKey,
+			svcExists:            true,
+			fwdRuleExists:        true,
+			connectionPreference: "acceptAutomatic",
+			expectErr:            false,
 		},
-		Status: v1.ServiceStatus{
-			LoadBalancer: v1.LoadBalancerStatus{
-				Ingress: []v1.LoadBalancerIngress{
-					{
-						IP: "1.2.3.4",
-					},
+		{
+			desc:                 "valid service attachment with udp ILB",
+			annotationKey:        annotations.UDPForwardingRuleKey,
+			svcExists:            true,
+			fwdRuleExists:        true,
+			connectionPreference: "acceptAutomatic",
+			expectErr:            false,
+		},
+		{
+			desc:                 "service missing ILB forwarding rule annotation",
+			annotationKey:        "some-key",
+			svcExists:            true,
+			fwdRuleExists:        true,
+			connectionPreference: "acceptAutomatic",
+			expectErr:            true,
+		},
+		{
+			desc:                 "service does not exist",
+			svcExists:            false,
+			connectionPreference: "acceptAutomatic",
+			expectErr:            true,
+		},
+		{
+			desc:                 "forwarding rule does not exist",
+			annotationKey:        annotations.TCPForwardingRuleKey,
+			svcExists:            false,
+			fwdRuleExists:        true,
+			connectionPreference: "acceptAutomatic",
+			expectErr:            true,
+		},
+	}
+
+	for _, tc := range testCases {
+		controller := newTestController()
+		fakeCloud := controller.cloud
+
+		if tc.svcExists {
+			svcAnnotations := map[string]string{
+				tc.annotationKey: frName,
+			}
+			svc := &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace:   testNamespace,
+					Name:        svcName,
+					Annotations: svcAnnotations,
+				},
+			}
+			controller.serviceLister.Add(svc)
+		}
+
+		key, err := composite.CreateKey(fakeCloud, frName, meta.Regional)
+		if err != nil {
+			t.Errorf("%s: Unexpected error when creating key - %v", tc.desc, err)
+		}
+
+		var rule *composite.ForwardingRule
+		if tc.fwdRuleExists {
+			// Create a ForwardingRule that matches
+			fwdRule := &composite.ForwardingRule{
+				Name:                frName,
+				LoadBalancingScheme: string(cloud.SchemeInternal),
+			}
+			if err = composite.CreateForwardingRule(fakeCloud, key, fwdRule); err != nil {
+				t.Errorf("%s: Failed to create fake forwarding rule %s, err %v", tc.desc, frName, err)
+			}
+
+			rule, err = composite.GetForwardingRule(fakeCloud, key, meta.VersionGA)
+			if err != nil {
+				t.Errorf("%s: Failed to get forwarding rule, err: %s", tc.desc, err)
+			}
+		}
+
+		apiGroup := "v1"
+		saCR := &sav1alpha1.ServiceAttachment{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: testNamespace,
+				Name:      saName,
+				UID:       "service-attachment-uid",
+			},
+			Spec: sav1alpha1.ServiceAttachmentSpec{
+				ConnectionPreference: tc.connectionPreference,
+				NATSubnets:           []string{"my-subnet"},
+				ResourceReference: &core.TypedLocalObjectReference{
+					APIGroup: &apiGroup,
+					Kind:     "service",
+					Name:     svcName,
 				},
 			},
-		},
+		}
+
+		controller.svcAttachmentLister.Add(saCR)
+
+		connPref, err := GetConnectionPreference(tc.connectionPreference)
+		if err != nil {
+			t.Errorf("%s: Failed to get connection preference: %q", tc.desc, err)
+		}
+
+		err = controller.processServiceAttachment(SvcAttachmentKeyFunc(testNamespace, saName))
+		if tc.expectErr && err == nil {
+			t.Errorf("%s: expected an error when process service attachment", tc.desc)
+		} else if !tc.expectErr && err != nil {
+			t.Errorf("%s: unexpected error processing Service Attachment: %s", tc.desc, err)
+		} else if !tc.expectErr {
+			gceSAName := controller.saNamer.ServiceAttachment(testNamespace, saName, string(saCR.UID))
+			expectedSA := &alpha.ServiceAttachment{
+				ConnectionPreference:   connPref,
+				Description:            "",
+				Name:                   gceSAName,
+				NatSubnets:             []string{"my-subnet"},
+				ProducerForwardingRule: rule.SelfLink,
+				Region:                 fakeCloud.Region(),
+			}
+
+			saKey, err := composite.CreateKey(fakeCloud, gceSAName, meta.Regional)
+			if err != nil {
+				t.Errorf("%s: errored creating a key for service attachment", tc.desc)
+			}
+			saCloud := fakeCloud.Compute().AlphaServiceAttachments()
+
+			sa, err := saCloud.Get(context2.TODO(), saKey)
+			if err != nil {
+				t.Errorf("%s: errored querying for service attachment", tc.desc)
+			}
+
+			expectedSA.SelfLink = sa.SelfLink
+
+			if !reflect.DeepEqual(sa, expectedSA) {
+				t.Errorf("%s: Expected service attachment resource to be \n%+v\n, but found \n%+v", tc.desc, expectedSA, sa)
+			}
+		}
 	}
+}
+
+func newTestController() *Controller {
 	kubeClient := fake.NewSimpleClientset()
-	kubeClient.CoreV1().Services(testNamespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	fakeGCE := gce.NewFakeGCECloud(gce.DefaultTestClusterValues())
+	resourceNamer := namer.NewNamer(ClusterID, "")
+	saClient := safake.NewSimpleClientset()
 
-	fakeCloud := gce.NewFakeGCECloud(gce.DefaultTestClusterValues())
-	key, err := composite.CreateKey(fakeCloud, frName, meta.Zonal)
-	if err != nil {
-		t.Errorf("Unexpected error when creating key - %v", err)
+	ctxConfig := context.ControllerContextConfig{
+		Namespace:             v1.NamespaceAll,
+		ResyncPeriod:          1 * time.Minute,
+		DefaultBackendSvcPort: test.DefaultBeSvcPort,
+		HealthCheckPath:       "/",
 	}
 
-	namer := namer.NewNamer(ClusterID, "")
+	ctx := context.NewControllerContext(nil, kubeClient, nil, nil, nil, nil, saClient, fakeGCE, resourceNamer, kubeSystemUID, ctxConfig)
 
-	// Create a ForwardingRule that matches
-	fwdRule := &composite.ForwardingRule{
-		Name:                frName,
-		IPAddress:           "1.2.3.4",
-		Ports:               []string{"123"},
-		IPProtocol:          "TCP",
-		LoadBalancingScheme: string(cloud.SchemeInternal),
-	}
-	if err = composite.CreateForwardingRule(fakeCloud, key, fwdRule); err != nil {
-		t.Errorf("Failed to create fake forwarding rule %s, err %v", fwdRule, err)
-	}
-
-	rule, err := composite.GetForwardingRule(fakeCloue, key, meta.VersionGA)(*ForwardingRule, error)
-	if err != nil {
-		t.Errorf("Failed to get forwarding rule, err: %s", err)
-	}
-
-	saCR := &sav1alpha1.ServiceAttachment{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      saName,
-		},
-		Spec: sav1alpha1.ServiceAttachmentSpec{
-			ConnectionPreference: "acceptAutomatic",
-			NATSubnets:           []string{"my-subnet"},
-			ResourceReference:    &core.TypedLocalObjectReference{},
-		},
-	}
-
-	expectedSA := &alpha.ServiceAttachment{
-		ConnectionPreference: "ACCEPT_AUTOMATIC",
-
-		Description: "",
-		Name:        namer.ServiceAttachment(testNamespace, saName),
-
-		NatSubnets: []string{"my-subnet"},
-
-		ProducerForwardingRule: rule.Selflink,
-	}
-
-	saKey, err := composite.CreateKey(fakeCloud, namer.ServiceAttachment(testNamespace, saName), meta.Zonal)
-	if err != nil {
-		t.Errorf("errored creating a key for service attachment")
-	}
-	saCloud := fakeCloud.Compute().AlphaServiceAttachments()
-
-	sa, err := saCloud.Get(context.TODO(), saKey)
-	if err != nil {
-		t.Errorf("errored querying for service attachment")
-	}
-
-	if !reflect.DeepEqual(sa, expectedSA) {
-		t.Errorf("Expected service attachment resource to be %+v, but found %+v", expectedSA, sa)
-	}
-
+	return NewController(ctx)
 }
