@@ -18,6 +18,7 @@ package psc
 import (
 	context2 "context"
 	"fmt"
+	"net/http"
 
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud/meta"
 	alpha "google.golang.org/api/compute/v0.alpha"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/ingress-gce/pkg/composite"
 	"k8s.io/ingress-gce/pkg/context"
 	serviceattachmentclient "k8s.io/ingress-gce/pkg/serviceattachment/client/clientset/versioned"
+	"k8s.io/ingress-gce/pkg/utils"
 	"k8s.io/ingress-gce/pkg/utils/namer"
 	"k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/legacy-cloud-providers/gce"
@@ -114,6 +116,20 @@ func (c *Controller) processServiceAttachment(key string) error {
 	if err != nil {
 		return fmt.Errorf("Failed to create key for GCE Service Attachment: %q", err)
 	}
+
+	existingSA, err := c.cloud.Compute().AlphaServiceAttachments().Get(context2.Background(), gceSAKey)
+	if err != nil && !utils.IsHTTPErrorCode(err, http.StatusNotFound) {
+		return fmt.Errorf("Failed querying for GCE Service Attachment: %q", err)
+	}
+
+	if existingSA != nil {
+		err = validateUpdate(existingSA, gceSvcAttachment)
+		if err != nil {
+			return fmt.Errorf("Invalid Service Attachment Update: %q", err)
+		}
+		return nil
+	}
+
 	return c.cloud.Compute().AlphaServiceAttachments().Insert(context2.Background(), gceSAKey, gceSvcAttachment)
 }
 
@@ -152,6 +168,32 @@ func validateResourceReference(ref *core.TypedLocalObjectReference) error {
 
 	if *ref.APIGroup != svcAPIGroup || ref.Kind != svcKind {
 		return fmt.Errorf("Invalid resource reference. Only APIGroup: %s and Kind: %s are valid", svcAPIGroup, svcKind)
+	}
+	return nil
+}
+
+func validateUpdate(existingSA, desiredSA *alpha.ServiceAttachment) error {
+	if existingSA.ConnectionPreference != desiredSA.ConnectionPreference {
+		return fmt.Errorf("ServiceAttachment connection preference cannot be updated from %s", existingSA.ConnectionPreference)
+	}
+
+	if existingSA.ProducerForwardingRule != desiredSA.ProducerForwardingRule {
+		return fmt.Errorf("ServiceAttachment forwarding rule cannot be updated from %s", existingSA.ProducerForwardingRule)
+	}
+
+	if len(existingSA.NatSubnets) != len(desiredSA.NatSubnets) {
+		return fmt.Errorf("ServiceAttachment NAT Subnets cannot be updated")
+	} else {
+		subnets := make(map[string]bool)
+		for _, subnet := range existingSA.NatSubnets {
+			subnets[subnet] = true
+		}
+
+		for _, subnet := range desiredSA.NatSubnets {
+			if !subnets[subnet] {
+				return fmt.Errorf("ServiceAttachment NAT Subnets cannot be updated. Found new subnet: %s", subnet)
+			}
+		}
 	}
 	return nil
 }
