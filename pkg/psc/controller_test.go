@@ -49,7 +49,6 @@ const (
 func TestServiceAttachmentCreation(t *testing.T) {
 	saName := "my-sa"
 	svcName := "my-service"
-	frName := "test-fr"
 	apiGroup := "v1"
 	validRef := &core.TypedLocalObjectReference{
 		APIGroup: &apiGroup,
@@ -145,18 +144,13 @@ func TestServiceAttachmentCreation(t *testing.T) {
 		controller := newTestController()
 		fakeCloud := controller.cloud
 
+		var frName string
 		if tc.svcExists {
-			svcAnnotations := map[string]string{
-				tc.annotationKey: frName,
+			var err error
+			_, frName, err = createSvc(controller, svcName, tc.annotationKey)
+			if err != nil {
+				t.Errorf("%s:%s", tc.desc, err)
 			}
-			svc := &v1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace:   testNamespace,
-					Name:        svcName,
-					Annotations: svcAnnotations,
-				},
-			}
-			controller.serviceLister.Add(svc)
 		}
 
 		var rule *composite.ForwardingRule
@@ -248,25 +242,16 @@ func TestServiceAttachmentUpdate(t *testing.T) {
 	for _, tc := range testcases {
 		controller := newTestController()
 		gceSAName := controller.saNamer.ServiceAttachment(testNamespace, saName, saUID)
-		frName := "test-fr"
-
-		svcAnnotations := map[string]string{
-			annotations.TCPForwardingRuleKey: frName,
+		_, frName, err := createSvc(controller, svcName, annotations.TCPForwardingRuleKey)
+		if err != nil {
+			t.Errorf("%s:%s", tc.desc, err)
 		}
-		svc := &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace:   testNamespace,
-				Name:        svcName,
-				Annotations: svcAnnotations,
-			},
-		}
-		controller.serviceLister.Add(svc)
-		saCR := testServiceAttachmentCR(saName, svcName, saUID, []string{"my-subnet"})
-		controller.svcAttachmentLister.Add(saCR)
-
-		if _, err := createForwardingRule(controller.cloud, frName); err != nil {
+		if _, err = createForwardingRule(controller.cloud, frName); err != nil {
 			t.Errorf("%s: %s", tc.desc, err)
 		}
+
+		saCR := testServiceAttachmentCR(saName, svcName, saUID, []string{"my-subnet"})
+		controller.svcAttachmentLister.Add(saCR)
 
 		if err := controller.processServiceAttachment(SvcAttachmentKeyFunc(testNamespace, saName)); err != nil {
 			t.Fatalf("%s: Unexpected error while processing ServiceAttachment: %q", tc.desc, err)
@@ -278,20 +263,11 @@ func TestServiceAttachmentUpdate(t *testing.T) {
 		}
 
 		if saCR.Spec.ResourceReference.Name != tc.updatedSACR.Spec.ResourceReference.Name {
-			frName = tc.updatedSACR.Spec.ResourceReference.Name + "-fr"
-			svc2Annotations := map[string]string{
-				annotations.TCPForwardingRuleKey: frName,
+			if _, frName, err = createSvc(controller, tc.updatedSACR.Spec.ResourceReference.Name, annotations.TCPForwardingRuleKey); err != nil {
+				t.Fatalf("%s:%s", tc.desc, err)
 			}
-			svc2 := &v1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace:   testNamespace,
-					Name:        tc.updatedSACR.Spec.ResourceReference.Name,
-					Annotations: svc2Annotations,
-				},
-			}
-			controller.serviceLister.Add(svc2)
-			if _, err := createForwardingRule(controller.cloud, frName); err != nil {
-				t.Errorf("%s: %s", tc.desc, err)
+			if _, err = createForwardingRule(controller.cloud, frName); err != nil {
+				t.Fatalf("%s: %s", tc.desc, err)
 			}
 		}
 
@@ -330,6 +306,38 @@ func newTestController() *Controller {
 	ctx := context.NewControllerContext(nil, kubeClient, nil, nil, nil, nil, saClient, fakeGCE, resourceNamer, kubeSystemUID, ctxConfig)
 
 	return NewController(ctx)
+}
+
+func createSvc(controller *Controller, svcName, forwardingRuleKey string) (*v1.Service, string, error) {
+	frName := svcName + "-fr"
+	svcAnnotations := map[string]string{
+		forwardingRuleKey: frName,
+	}
+	svc := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:   testNamespace,
+			Name:        svcName,
+			Annotations: svcAnnotations,
+		},
+	}
+	return svc, frName, controller.serviceLister.Add(svc)
+}
+
+func createSvcAndForwardingRule(controller *Controller, svcName, forwardingRuleKey string) (*v1.Service, *composite.ForwardingRule, error) {
+	frName := svcName + "-fr"
+	svcAnnotations := map[string]string{
+		forwardingRuleKey: frName,
+	}
+	svc := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:   testNamespace,
+			Name:        svcName,
+			Annotations: svcAnnotations,
+		},
+	}
+	controller.serviceLister.Add(svc)
+	rule, err := createForwardingRule(controller.cloud, frName)
+	return svc, rule, err
 }
 
 func createForwardingRule(c *gce.Cloud, frName string) (*composite.ForwardingRule, error) {
