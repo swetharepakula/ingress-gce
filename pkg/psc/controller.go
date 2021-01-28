@@ -33,6 +33,7 @@ import (
 	serviceattachmentclient "k8s.io/ingress-gce/pkg/serviceattachment/client/clientset/versioned"
 	"k8s.io/ingress-gce/pkg/utils"
 	"k8s.io/ingress-gce/pkg/utils/namer"
+	"k8s.io/klog"
 	"k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/legacy-cloud-providers/gce"
 )
@@ -60,7 +61,7 @@ type Controller struct {
 
 func NewController(ctx *context.ControllerContext) *Controller {
 	saNamer := namer.NewServiceAttachmentNamer(ctx.ClusterNamer, string(ctx.KubeSystemUID))
-	return &Controller{
+	controller := &Controller{
 		client:              ctx.KubeClient,
 		cloud:               ctx.Cloud,
 		saClient:            ctx.SAClient,
@@ -69,6 +70,23 @@ func NewController(ctx *context.ControllerContext) *Controller {
 		svcAttachmentLister: ctx.SAInformer.GetIndexer(),
 		serviceLister:       ctx.ServiceInformer.GetIndexer(),
 	}
+
+	ctx.SAInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: controller.enqueueServiceAttachment,
+		UpdateFunc: func(old, cur interface{}) {
+			controller.enqueueServiceAttachment(cur)
+		},
+	})
+	return controller
+}
+
+func (c *Controller) enqueueServiceAttachment(obj interface{}) {
+	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+	if err != nil {
+		klog.Errorf("Failed to generate service attachment key: %q", err)
+		return
+	}
+	c.svcAttachmentQueue.Add(key)
 }
 
 func (c *Controller) processServiceAttachment(key string) error {
