@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/ingress-gce/pkg/frontendconfig"
 	"k8s.io/ingress-gce/pkg/ingparams"
+	"k8s.io/ingress-gce/pkg/psc"
 	"k8s.io/ingress-gce/pkg/serviceattachment"
 	"k8s.io/ingress-gce/pkg/svcneg"
 	"k8s.io/klog"
@@ -267,6 +268,13 @@ func runControllers(ctx *ingctx.ControllerContext) {
 		go l4Controller.Run()
 		klog.V(0).Infof("L4 controller started")
 	}
+
+	if flags.F.EnablePSC {
+		pscController := psc.NewController(ctx)
+		go pscController.Run(stopCh)
+		klog.V(0).Infof("PSC Controller started")
+	}
+
 	var zoneGetter negtypes.ZoneGetter
 	zoneGetter = lbc.Translator
 	// In NonGCP mode, use the zone specified in gce.conf directly.
