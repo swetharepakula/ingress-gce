@@ -19,12 +19,15 @@ import (
 	context2 "context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud/meta"
 	alpha "google.golang.org/api/compute/v0.alpha"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/ingress-gce/pkg/annotations"
 	sav1alpha1 "k8s.io/ingress-gce/pkg/apis/serviceattachment/v1alpha1"
@@ -57,6 +60,9 @@ type Controller struct {
 	saNamer             namer.ServiceAttachmentNamer
 	svcAttachmentLister cache.Indexer
 	serviceLister       cache.Indexer
+	recorder            func(string) record.EventRecorder
+
+	hasSynced func() bool
 }
 
 func NewController(ctx *context.ControllerContext) *Controller {
@@ -69,6 +75,8 @@ func NewController(ctx *context.ControllerContext) *Controller {
 		svcAttachmentQueue:  workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
 		svcAttachmentLister: ctx.SAInformer.GetIndexer(),
 		serviceLister:       ctx.ServiceInformer.GetIndexer(),
+		hasSynced:           ctx.HasSynced,
+		recorder:            ctx.Recorder,
 	}
 
 	ctx.SAInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -78,6 +86,58 @@ func NewController(ctx *context.ControllerContext) *Controller {
 		},
 	})
 	return controller
+}
+
+func (c *Controller) Run(stopChan <-chan struct{}) {
+	wait.PollUntil(5*time.Second, func() (bool, error) {
+		klog.V(2).Infof("Waiting for initial sync")
+		return c.hasSynced(), nil
+	}, stopChan)
+
+	klog.V(2).Infof("Starting private service connect controller")
+	defer func() {
+		klog.V(2).Infof("Shutting down private service connect controller")
+		c.svcAttachmentQueue.ShutDown()
+	}()
+
+	go wait.Until(func() {
+		processKey := func() {
+			key, quit := c.svcAttachmentQueue.Get()
+			if quit {
+				return
+			}
+			defer c.svcAttachmentQueue.Done(key)
+			err := c.processServiceAttachment(key.(string))
+			c.handleErr(err, key)
+		}
+
+		for {
+			select {
+			case <-stopChan:
+				return
+			default:
+				processKey()
+			}
+		}
+	}, time.Second, stopChan)
+
+	<-stopChan
+}
+
+func (c *Controller) handleErr(err error, key interface{}) {
+	if err == nil {
+		c.svcAttachmentQueue.Forget(key)
+		return
+	}
+	eventMsg := fmt.Sprintf("error processing service attachment %q: %q", key, err)
+	klog.Errorf(eventMsg)
+	if obj, exists, err := c.svcAttachmentLister.GetByKey(key.(string)); err != nil {
+		klog.Warningf("failed to retrieve service attachment %q from the store: %q", key.(string), err)
+	} else if exists {
+		svcAttachment := obj.(*sav1alpha1.ServiceAttachment)
+		c.recorder(svcAttachment.Namespace).Eventf(svcAttachment, v1.EventTypeWarning, "ProcessServiceAttachmentFailed", eventMsg)
+	}
+	c.svcAttachmentQueue.AddRateLimited(key)
 }
 
 func (c *Controller) enqueueServiceAttachment(obj interface{}) {
@@ -102,7 +162,8 @@ func (c *Controller) processServiceAttachment(key string) error {
 	}
 
 	if !exists {
-		// TODO: delete svc attachment
+		// Allow Garbage Collection to Delete Service Attachment
+		return nil
 	}
 
 	svcAttachment := obj.(*sav1alpha1.ServiceAttachment)
