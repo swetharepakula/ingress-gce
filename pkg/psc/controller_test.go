@@ -290,6 +290,41 @@ func TestServiceAttachmentUpdate(t *testing.T) {
 	}
 }
 
+func TestServiceAttachmentGarbageCollection(t *testing.T) {
+	svcNamePrefix := "my-service"
+	saUIDPrefix := "serivce-attachment-uid"
+
+	sa1 := testServiceAttachmentCR("sa-1", svcNamePrefix+"1", saUIDPrefix+"-1", []string{"my-subnet"})
+	sa2 := testServiceAttachmentCR("sa-1", svcNamePrefix+"2", saUIDPrefix+"-2", []string{"my-subnet"})
+	sa3 := testServiceAttachmentCR("sa-1", svcNamePrefix+"3", saUIDPrefix+"-3", []string{"my-subnet"})
+
+	testcases := []struct {
+		desc            string
+		gcSVCAttachment []sav1alpha1.ServiceAttachment
+	}{
+		{},
+	}
+
+	for _, tc := range testcases {
+		controller := newTestController()
+
+		for _, sa := range []*sav1alpha1.ServiceAttachment{sa1, sa2, sa3} {
+
+			svcName := sa.Spec.ResourceReference.Name
+			svc, frName, err := createSvc(controller, svcName, annotations.TCPForwardingRuleKey)
+			if err != nil {
+				t.Errorf("%s:%s", tc.desc, err)
+			}
+			controller.serviceLister.Add(svc)
+
+			if _, err = createForwardingRule(controller.cloud, frName); err != nil {
+				t.Errorf("%s: %s", tc.desc, err)
+			}
+			controller.svcAttachmentLister.Add(sa)
+		}
+	}
+}
+
 func newTestController() *Controller {
 	kubeClient := fake.NewSimpleClientset()
 	fakeGCE := gce.NewFakeGCECloud(gce.DefaultTestClusterValues())
