@@ -19,31 +19,38 @@ import (
 	context2 "context"
 	"fmt"
 	"net/http"
+	"reflect"
 	"time"
 
+	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud"
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud/meta"
 	alpha "google.golang.org/api/compute/v0.alpha"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/ingress-gce/pkg/annotations"
 	sav1alpha1 "k8s.io/ingress-gce/pkg/apis/serviceattachment/v1alpha1"
 	"k8s.io/ingress-gce/pkg/composite"
 	"k8s.io/ingress-gce/pkg/context"
 	serviceattachmentclient "k8s.io/ingress-gce/pkg/serviceattachment/client/clientset/versioned"
 	"k8s.io/ingress-gce/pkg/utils"
+	"k8s.io/ingress-gce/pkg/utils/common"
 	"k8s.io/ingress-gce/pkg/utils/namer"
+	"k8s.io/ingress-gce/pkg/utils/patch"
 	"k8s.io/klog"
-	"k8s.io/kubernetes/pkg/apis/core"
+	"k8s.io/kubernetes/pkg/util/slice"
 	"k8s.io/legacy-cloud-providers/gce"
 )
 
 const (
 	svcAPIGroup = "v1"
-	svcKind     = "service"
+	svcKind     = "Service"
 )
 
 // Controller is a private service connect (psc) controller
@@ -121,6 +128,11 @@ func (c *Controller) Run(stopChan <-chan struct{}) {
 		}
 	}, time.Second, stopChan)
 
+	go func() {
+		time.Sleep(2 * time.Minute)
+		wait.Until(c.garbageCollectServiceAttachments, 2*time.Minute, stopChan)
+	}()
+
 	<-stopChan
 }
 
@@ -167,26 +179,35 @@ func (c *Controller) processServiceAttachment(key string) error {
 	}
 
 	svcAttachment := obj.(*sav1alpha1.ServiceAttachment)
+	updatedCR, err := c.ensureSAFinalizer(svcAttachment)
+	if err != nil {
+		return fmt.Errorf("Errored adding finalizer on ServiceAttachment CR %s/%s: %s", namespace, name, err)
+	}
 
-	connPref, err := GetConnectionPreference(svcAttachment.Spec.ConnectionPreference)
+	connPref, err := GetConnectionPreference(updatedCR.Spec.ConnectionPreference)
 	if err != nil {
 		return fmt.Errorf("Failed processing ServiceAttachment %s/%s: Invalid connection preference: %s", namespace, name, err)
 	}
 
-	if err = validateResourceReference(svcAttachment.Spec.ResourceReference); err != nil {
+	if err = validateResourceReference(updatedCR.Spec.ResourceReference); err != nil {
 		return err
 	}
 
-	frURL, err := c.getForwardingRule(namespace, svcAttachment.Spec.ResourceReference.Name)
+	frURL, err := c.getForwardingRule(namespace, updatedCR.Spec.ResourceReference.Name)
 	if err != nil {
 		return fmt.Errorf("Failed to find forwarding rule: %q", err)
 	}
 
-	saName := c.saNamer.ServiceAttachment(namespace, name, string(svcAttachment.UID))
+	subnetURLs, err := c.getSubnetURLs(updatedCR.Spec.NATSubnets)
+	if err != nil {
+		return fmt.Errorf("Failed to find nat subnets: %q", err)
+	}
+
+	saName := c.saNamer.ServiceAttachment(namespace, name, string(updatedCR.UID))
 	gceSvcAttachment := &alpha.ServiceAttachment{
 		ConnectionPreference:   connPref,
 		Name:                   saName,
-		NatSubnets:             svcAttachment.Spec.NATSubnets,
+		NatSubnets:             subnetURLs,
 		ProducerForwardingRule: frURL,
 		Region:                 c.cloud.Region(),
 	}
@@ -212,6 +233,82 @@ func (c *Controller) processServiceAttachment(key string) error {
 	return c.cloud.Compute().AlphaServiceAttachments().Insert(context2.Background(), gceSAKey, gceSvcAttachment)
 }
 
+func (c *Controller) garbageCollectServiceAttachments() {
+	klog.V(2).Infof("Staring Service Attachment Garbage Collection")
+	defer klog.V(2).Infof("Finished Service Attachment Garbage Collection")
+	crs := c.svcAttachmentLister.List()
+	for _, obj := range crs {
+		sa := obj.(*sav1alpha1.ServiceAttachment)
+		if sa.GetDeletionTimestamp().IsZero() {
+			continue
+		}
+		gceName := c.saNamer.ServiceAttachment(sa.Namespace, sa.Name, string(sa.UID))
+
+		if err := c.ensureDeleteServiceAttachment(gceName); utils.IgnoreHTTPNotFound(err) != nil {
+			eventMsg := fmt.Sprintf("Failed to Garbage Collect Service Attachment %s/%s: %q", sa.Namespace, sa.Name, err)
+			klog.Errorf(eventMsg)
+			c.recorder(sa.Namespace).Eventf(sa, v1.EventTypeWarning, "ServiceAttachmentGCFailed", eventMsg)
+			continue
+		}
+
+		if err := c.ensureSAFinalizerRemoved(sa); err != nil {
+			//handle error situation
+		}
+	}
+}
+
+func (c *Controller) ensureDeleteServiceAttachment(name string) error {
+	saKey, err := composite.CreateKey(c.cloud, name, meta.Regional)
+	if err != nil {
+		return fmt.Errorf("failed to create key for service attachment %q", name)
+	}
+	_, err = c.cloud.Compute().AlphaServiceAttachments().Get(context2.Background(), saKey)
+	if err != nil {
+		if utils.IsHTTPErrorCode(err, http.StatusNotFound) || utils.IsHTTPErrorCode(err, http.StatusBadRequest) {
+			return nil
+		}
+		return fmt.Errorf("failed querying for service attachment %q: %q", name, err)
+	}
+
+	return c.cloud.Compute().AlphaServiceAttachments().Delete(context2.Background(), saKey)
+}
+
+func (c *Controller) ensureSAFinalizer(saCR *sav1alpha1.ServiceAttachment) (*sav1alpha1.ServiceAttachment, error) {
+	if len(saCR.Finalizers) != 0 {
+		for _, finalizer := range saCR.Finalizers {
+			if finalizer == common.ServiceAttachmentFinalizerKey {
+				return saCR, nil
+			}
+		}
+	}
+
+	updatedCR := saCR.DeepCopy()
+
+	if updatedCR.Finalizers == nil {
+		updatedCR.Finalizers = []string{}
+	}
+	updatedCR.Finalizers = append(updatedCR.Finalizers, common.ServiceAttachmentFinalizerKey)
+	patchBytes, err := patch.MergePatchBytes(saCR, updatedCR)
+	if err != nil {
+		return saCR, err
+	}
+
+	return c.saClient.NetworkingV1alpha1().ServiceAttachments(saCR.Namespace).Patch(context2.Background(), updatedCR.Name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+}
+
+func (c *Controller) ensureSAFinalizerRemoved(cr *sav1alpha1.ServiceAttachment) error {
+	updatedCR := cr.DeepCopy()
+	updatedCR.Finalizers = slice.RemoveString(updatedCR.Finalizers, common.ServiceAttachmentFinalizerKey, nil)
+
+	patchBytes, err := patch.MergePatchBytes(cr, updatedCR)
+	if err != nil {
+		return fmt.Errorf("failed to create merge patch for service attachement %s/%s: %q", cr.Namespace, cr.Name, err)
+	}
+
+	_, err = c.saClient.NetworkingV1alpha1().ServiceAttachments(cr.Namespace).Patch(context2.Background(), updatedCR.Name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	return err
+}
+
 func (c *Controller) getForwardingRule(namespace, svcName string) (string, error) {
 
 	svcKey := fmt.Sprintf("%s/%s", namespace, svcName)
@@ -229,7 +326,7 @@ func (c *Controller) getForwardingRule(namespace, svcName string) (string, error
 	frName, ok := svc.Annotations[annotations.TCPForwardingRuleKey]
 	if !ok {
 		if frName, ok = svc.Annotations[annotations.UDPForwardingRuleKey]; !ok {
-			return "", fmt.Errorf("No Forwarding Rule Annotation exists on service %s/%s", namespace, svcName)
+			frName = cloudprovider.DefaultLoadBalancerName(svc)
 		}
 	}
 	fwdRule, err := c.cloud.Compute().ForwardingRules().Get(context2.Background(), meta.RegionalKey(frName, c.cloud.Region()))
@@ -237,40 +334,87 @@ func (c *Controller) getForwardingRule(namespace, svcName string) (string, error
 		return "", fmt.Errorf("Failed to get Forwarding Rule %s: %q", frName, err)
 	}
 
-	return fwdRule.SelfLink, nil
-}
-
-func validateResourceReference(ref *core.TypedLocalObjectReference) error {
-	if ref.APIGroup == nil {
-		return fmt.Errorf("APIGroup should not be nil")
+	foundMatchingIP := false
+	for _, ing := range svc.Status.LoadBalancer.Ingress {
+		if ing.IP == fwdRule.IPAddress {
+			foundMatchingIP = true
+			break
+		}
 	}
 
-	if *ref.APIGroup != svcAPIGroup || ref.Kind != svcKind {
-		return fmt.Errorf("Invalid resource reference. Only APIGroup: %s and Kind: %s are valid", svcAPIGroup, svcKind)
+	if foundMatchingIP {
+		return fwdRule.SelfLink, nil
+	}
+	return "", fmt.Errorf("Forwarding rule does not have matching IPAddr")
+}
+
+func (c *Controller) getSubnetURLs(subnets []string) ([]string, error) {
+
+	var subnetURLs []string
+	for _, subnetName := range subnets {
+		subnet, err := c.cloud.Compute().AlphaSubnetworks().Get(context2.Background(), meta.RegionalKey(subnetName, c.cloud.Region()))
+		if err != nil {
+			return subnetURLs, fmt.Errorf("Failed to get Subnetwork %s: %q", subnetName, err)
+		}
+		subnetURLs = append(subnetURLs, subnet.SelfLink)
+
+	}
+	return subnetURLs, nil
+}
+
+func validateResourceReference(ref sav1alpha1.ResourceReference) error {
+	// apiGroup := ""
+	// if ref.APIGroup != nil {
+	// 	apiGroup = *ref.APIGroup
+	// 	// return fmt.Errorf("APIGroup should not be nil")
+	// }
+
+	// if apiGroup != svcAPIGroup || ref.Kind != svcKind {
+	if ref.Kind != "service" && ref.Kind != "Service" {
+		return fmt.Errorf("Invalid resource reference. Only Kind: %s are valid", svcKind)
 	}
 	return nil
 }
 
 func validateUpdate(existingSA, desiredSA *alpha.ServiceAttachment) error {
 	if existingSA.ConnectionPreference != desiredSA.ConnectionPreference {
-		return fmt.Errorf("ServiceAttachment connection preference cannot be updated from %s", existingSA.ConnectionPreference)
+		return fmt.Errorf("ServiceAttachment connection preference cannot be updated from %s to %s", existingSA.ConnectionPreference, desiredSA.ConnectionPreference)
 	}
 
-	if existingSA.ProducerForwardingRule != desiredSA.ProducerForwardingRule {
-		return fmt.Errorf("ServiceAttachment forwarding rule cannot be updated from %s", existingSA.ProducerForwardingRule)
+	existingFR, err := cloud.ParseResourceURL(existingSA.ProducerForwardingRule)
+	if err != nil {
+		return fmt.Errorf("ServiceAttachment existing forwarding rule has malformed URL: %q", err)
+	}
+	desiredFR, err := cloud.ParseResourceURL(desiredSA.ProducerForwardingRule)
+	if err != nil {
+		return fmt.Errorf("ServiceAttachment desired forwarding rule has malformed URL: %q", err)
+	}
+	if !reflect.DeepEqual(existingFR, desiredFR) {
+		return fmt.Errorf("ServiceAttachment forwarding rule cannot be updated from %s to %s", existingSA.ProducerForwardingRule, desiredSA.ProducerForwardingRule)
 	}
 
 	if len(existingSA.NatSubnets) != len(desiredSA.NatSubnets) {
 		return fmt.Errorf("ServiceAttachment NAT Subnets cannot be updated")
 	} else {
-		subnets := make(map[string]bool)
+		subnets := make(map[string]*cloud.ResourceID)
 		for _, subnet := range existingSA.NatSubnets {
-			subnets[subnet] = true
-		}
+			existingSN, err := cloud.ParseResourceURL(subnet)
+			if err != nil {
+				return fmt.Errorf("ServiceAttachment existing subnet has malformed URL: %q", err)
+			}
+			subnets[existingSN.Key.Name] = existingSN
 
-		for _, subnet := range desiredSA.NatSubnets {
-			if !subnets[subnet] {
-				return fmt.Errorf("ServiceAttachment NAT Subnets cannot be updated. Found new subnet: %s", subnet)
+			for _, subnet := range desiredSA.NatSubnets {
+				desiredSN, err := cloud.ParseResourceURL(subnet)
+				if err != nil {
+					return fmt.Errorf("ServiceAttachment desired subnet has malformed URL: %q", err)
+				}
+
+				fmt.Printf("REMOVE ME\nDesiredSN: %+v\nExisting:%+v\n", desiredSN, subnets[desiredSN.Key.Name])
+
+				if !reflect.DeepEqual(subnets[desiredSN.Key.Name], desiredSN) {
+					return fmt.Errorf("ServiceAttachment NAT Subnets cannot be updated. Found new subnet: %s", desiredSN.Key.Name)
+				}
 			}
 		}
 	}
