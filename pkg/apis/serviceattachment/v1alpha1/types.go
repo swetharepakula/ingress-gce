@@ -18,7 +18,6 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	core "k8s.io/kubernetes/pkg/apis/core"
 )
 
 const (
@@ -52,7 +51,8 @@ type ServiceAttachmentSpec struct {
 	// ResourceReference is the reference to the K8s resource that created the forwarding rule
 	// Only Services can be used as a reference
 	// +required
-	ResourceReference *core.TypedLocalObjectReference `json:"resourceReference"`
+	// ResourceReference *core.TypedLocalObjectReference `json:"resourceReference"`
+	ResourceReference ResourceReference `json:"resourceReference"`
 }
 
 // ServiceAttachmentStatus is the status for a ServiceAttachment resource
@@ -73,4 +73,17 @@ type ServiceAttachmentList struct {
 	metav1.ListMeta `json:"metadata"`
 
 	Items []ServiceAttachment `json:"items"`
+}
+
+// +k8s:openapi-gen=true
+type ResourceReference struct {
+	// APIGroup is the group for the resource being referenced.
+	// If APIGroup is not specified, the specified Kind must be in the core API group.
+	// For any other third-party types, APIGroup is required.
+	// +optional
+	APIGroup *string `json:"apiGroup"`
+	// Kind is the type of resource being referenced
+	Kind string `json:"kind"`
+	// Name is the name of resource being referenced
+	Name string `json:"name"`
 }
