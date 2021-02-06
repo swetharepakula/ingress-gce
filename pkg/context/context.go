@@ -23,6 +23,7 @@ import (
 	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
@@ -35,6 +36,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	sav1alpha1 "k8s.io/ingress-gce/pkg/apis/serviceattachment/v1alpha1"
 	backendconfigclient "k8s.io/ingress-gce/pkg/backendconfig/client/clientset/versioned"
 	informerbackendconfig "k8s.io/ingress-gce/pkg/backendconfig/client/informers/externalversions/backendconfig/v1"
 	"k8s.io/ingress-gce/pkg/cmconfig"
@@ -98,6 +100,7 @@ type ControllerContext struct {
 
 	// Map of namespace => record.EventRecorder.
 	recorders map[string]record.EventRecorder
+	scheme    *runtime.Scheme
 }
 
 // ControllerContextConfig encapsulates some settings that are tunable via command line flags.
@@ -148,6 +151,7 @@ func NewControllerContext(
 		SAInformer:              informerserviceattachment.NewServiceAttachmentInformer(saClient, config.Namespace, config.ResyncPeriod, utils.NewNamespaceIndexer()),
 		recorders:               map[string]record.EventRecorder{},
 		healthChecks:            make(map[string]func() error),
+		scheme:                  scheme.Scheme,
 	}
 
 	if config.FrontendConfigEnabled {
@@ -266,6 +270,10 @@ func (ctx *ControllerContext) HasSynced() bool {
 		funcs = append(funcs, ctx.IngParamsInformer.HasSynced)
 	}
 
+	if ctx.SAInformer != nil {
+		funcs = append(funcs, ctx.SAInformer.HasSynced)
+	}
+
 	for _, f := range funcs {
 		if !f() {
 			return false
@@ -344,6 +352,12 @@ func (ctx *ControllerContext) Start(stopCh chan struct{}) {
 	}
 	if ctx.IngParamsInformer != nil {
 		go ctx.IngParamsInformer.Run(stopCh)
+	}
+	if ctx.SAInformer != nil {
+		go ctx.SAInformer.Run(stopCh)
+		if err := sav1alpha1.AddToScheme(ctx.scheme); err != nil {
+			klog.Errorf("Failed to add ServiceAttachment CRD scheme to event recorder")
+		}
 	}
 	// Export ingress usage metrics.
 	go ctx.ControllerMetrics.Run(stopCh)
