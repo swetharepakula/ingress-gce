@@ -39,6 +39,9 @@ const (
 	ILBFinalizerV2 = "gke.networking.io/l4-ilb-v2"
 	// NegFinalizerKey is the finalizer used by neg controller to ensure NEG CRs are deleted after corresponding negs are deleted
 	NegFinalizerKey = "networking.gke.io/neg-finalizer"
+	// ServiceAttachmentFinalizer used by the psc controller to ensure Service Attachment CRs
+	// are deleted after the corresponding Service Attachments are deleted
+	ServiceAttachmentFinalizerKey = "networking.gke.io/service-attachment-finalizer"
 )
 
 // IsDeletionCandidate is true if the passed in meta contains an ingress finalizer.
