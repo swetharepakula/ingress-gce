@@ -27,9 +27,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/ingress-gce/pkg/flags"
 	"k8s.io/ingress-gce/pkg/utils"
 	"k8s.io/klog"
+	"k8s.io/legacy-cloud-providers/gce"
 )
 
 // DefaultBackendServicePort returns the ServicePort which will be
@@ -88,6 +90,24 @@ func IngressClassEnabled(client kubernetes.Interface) bool {
 
 	klog.V(2).Info("Ingress Class support enabled")
 	return true
+}
+
+func GetClusterGCEURL(kubeConfig *rest.Config, cloud *gce.Cloud) string {
+	clusters, err := cloud.GetManagedClusters(context.Background())
+	if err != nil {
+		klog.V(2).Infof("Failed to query clusters : %q", err)
+	}
+
+	for _, cluster := range clusters {
+		clusterHost := fmt.Sprintf("https://%s", cluster.Endpoint)
+		if clusterHost == kubeConfig.Host {
+			klog.V(2).Infof("Setting cluster GCE URL to %s", cluster.SelfLink)
+			return cluster.SelfLink
+		}
+	}
+
+	klog.V(2).Info("Could not find cluster, setting cluster GCE URL to ''")
+	return ""
 }
 
 // servicePortForDefaultService returns the service port for the default service; returns nil if not found.

@@ -185,6 +185,7 @@ func main() {
 	kubeSystemUID := kubeSystemNS.GetUID()
 
 	cloud := app.NewGCEClient()
+	app.GetClusterGCEURL(kubeConfigForProtobuf, cloud)
 	defaultBackendServicePort := app.DefaultBackendServicePort(kubeClient)
 	ctxConfig := ingctx.ControllerContextConfig{
 		Namespace:             flags.F.WatchNamespace,
