@@ -42,6 +42,7 @@ import (
 	backendconfigclient "k8s.io/ingress-gce/pkg/backendconfig/client/clientset/versioned"
 	frontendconfigclient "k8s.io/ingress-gce/pkg/frontendconfig/client/clientset/versioned"
 	ingparamsclient "k8s.io/ingress-gce/pkg/ingparams/client/clientset/versioned"
+	serviceattachmentclient "k8s.io/ingress-gce/pkg/serviceattachment/client/clientset/versioned"
 	svcnegclient "k8s.io/ingress-gce/pkg/svcneg/client/clientset/versioned"
 
 	ingctx "k8s.io/ingress-gce/pkg/context"
@@ -142,10 +143,16 @@ func main() {
 		klog.Fatalf("Failed to create NetworkEndpointGroup client: %v", err)
 	}
 
+	var svcAttachmentClient serviceattachmentclient.Interface
 	if flags.F.EnablePSC {
 		serviceAttachmentCRDMeta := serviceattachment.CRDMeta()
 		if _, err := crdHandler.EnsureCRD(serviceAttachmentCRDMeta, true); err != nil {
 			klog.Fatalf("Failed to ensure ServiceAttachment CRD: %v", err)
+		}
+
+		svcAttachmentClient, err = serviceattachmentclient.NewForConfig(kubeConfig)
+		if err != nil {
+			klog.Fatalf("Failed to create ServiceAttachment client: %v", err)
 		}
 	}
 
@@ -189,7 +196,7 @@ func main() {
 		ASMConfigMapNamespace: flags.F.ASMConfigMapBasedConfigNamespace,
 		ASMConfigMapName:      flags.F.ASMConfigMapBasedConfigCMName,
 	}
-	ctx := ingctx.NewControllerContext(kubeConfig, kubeClient, backendConfigClient, frontendConfigClient, svcNegClient, ingParamsClient, cloud, namer, kubeSystemUID, ctxConfig)
+	ctx := ingctx.NewControllerContext(kubeConfig, kubeClient, backendConfigClient, frontendConfigClient, svcNegClient, ingParamsClient, svcAttachmentClient, cloud, namer, kubeSystemUID, ctxConfig)
 	go app.RunHTTPServer(ctx.HealthCheck)
 
 	if !flags.F.LeaderElection.LeaderElect {
