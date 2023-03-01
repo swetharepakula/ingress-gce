@@ -1,4 +1,4 @@
-/*
+*
 Copyright 2020 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -109,6 +109,10 @@ func (l *LocalL4ILBEndpointsCalculator) CalculateEndpoints(eds []types.Endpoints
 	return subsetMap, nil, 0, err
 }
 
+func (l *LocalL4ILBEndpointsCalculator) ValidateEndpoints( endpointSet map[string]types.NetworkEndpointSet) error {
+	// this should be a no-op for now
+	return nil
+}
 // ClusterL4ILBEndpointGetter implements the NetworkEndpointsCalculator interface.
 // It exposes methods to calculate Network endpoints for GCE_VM_IP NEGs when the service
 // uses "ExternalTrafficPolicy: Cluster" mode This is the default mode.
@@ -170,6 +174,11 @@ type L7EndpointsCalculator struct {
 	logger              klog.Logger
 }
 
+func (l *ClusterL4IVLBEndpointsCalculator) ValidateEndpoints( endpointSet map[string]types.NetworkEndpointSet ) error {
+// for now this will be a noop
+	return nil
+}
+
 func NewL7EndpointsCalculator(zoneGetter types.ZoneGetter, podLister cache.Indexer, svcPortName string, endpointType types.NetworkEndpointType, logger klog.Logger) *L7EndpointsCalculator {
 	return &L7EndpointsCalculator{
 		zoneGetter:          zoneGetter,
@@ -196,4 +205,10 @@ func nodeMapToString(nodeMap map[string][]*v1.Node) string {
 		str = append(str, fmt.Sprintf("Zone %s: %d nodes", zone, len(nodeList)))
 	}
 	return strings.Join(str, ",")
+}
+
+func (l *L7EndpointsCalculator) ValidateEndpoints( endpointSet map[string]types.NetworkEndpointSet ) error {
+// for now this will be a noop
+// add all the validations about nodes, pods 
+	return nil
 }

@@ -47,6 +47,7 @@ const (
 )
 
 var (
+	// these errors should only be defined in one place
 	ErrEPMissingNodeName = errors.New("endpoint has empty nodeName field")
 	ErrNodeNotFound      = errors.New("failed to retrieve associated zone of node")
 	ErrEPMissingZone     = errors.New("endpoint has empty zone field")

@@ -259,14 +259,18 @@ func (s *transactionSyncer) syncInternalImpl() error {
 	}
 	endpointsData := negtypes.EndpointsDataFromEndpointSlices(endpointSlices)
 	targetMap, endpointPodMap, dupCount, err = s.endpointsCalculator.CalculateEndpoints(endpointsData, currentMap)
+	if err != nil {
+		s.setErrorState(getErrorStateRease(err))
+		return fmt.Errorf("endpoints calculation error in mode %q, err: %w", s.endpointsCalculator.Mode(), err)
+	}
+
+	s.endpointCalculator.ValidateEndpoints(endpointsData, endpointPodMap, dupCount)
+
 	if valid, reason := s.isValidEPField(err); !valid {
 		s.setErrorState(reason)
 	}
 	if valid, reason := s.isValidEndpointInfo(endpointsData, endpointPodMap, dupCount); !valid {
 		s.setErrorState(reason)
-	}
-	if err != nil {
-		return fmt.Errorf("endpoints calculation error in mode %q, err: %w", s.endpointsCalculator.Mode(), err)
 	}
 
 	s.logStats(targetMap, "desired NEG endpoints")
@@ -386,17 +390,17 @@ func (s *transactionSyncer) isValidEndpointInfo(eds []negtypes.EndpointsData, en
 	return true, negtypes.ResultSuccess
 }
 
-// isValidEPField returns false and the corresponding reason if there is endpoint with missing zone or nodeName
-func (s *transactionSyncer) isValidEPField(err error) (bool, string) {
+// convert isValidEPField to getErrorReason, since it
+func getErrorReason(err error) string {
 	if errors.Is(err, ErrEPMissingNodeName) {
 		s.logger.Info("Detected unexpected error when checking missing nodeName", "error", err)
-		return false, negtypes.ResultEPMissingNodeName
+		return negtypes.ResultEPMissingNodeName
 	}
 	if errors.Is(err, ErrEPMissingZone) {
 		s.logger.Info("Detected unexpected error when checking missing zone", "error", err)
-		return false, negtypes.ResultEPMissingZone
+		return negtypes.ResultEPMissingZone
 	}
-	return true, negtypes.ResultSuccess
+	return negtypes.ResultOtherError
 }
 
 // isValidEPBatch returns false and the corresponding reason if the error from endpoint batch response is due to bad request
