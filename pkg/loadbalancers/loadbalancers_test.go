@@ -187,6 +187,29 @@ func TestCreateHTTPLoadBalancer(t *testing.T) {
 	verifyHTTPForwardingRuleAndProxyLinks(t, j, l7, "")
 }
 
+func TestUpdateHTTPLoadBalancer(t *testing.T) {
+	// This should NOT create the forwarding rule and target proxy
+	// associated with the HTTPS branch of this loadbalancer.
+	j := newTestJig(t)
+
+	gceUrlMap := utils.NewGCEURLMap(klog.TODO())
+	gceUrlMap.DefaultBackend = &utils.ServicePort{NodePort: 31234, BackendNamer: j.namer}
+	gceUrlMap.PutPathRulesForHost("bar.example.com", []utils.PathRule{{Path: "/bar", Backend: utils.ServicePort{NodePort: 30000, BackendNamer: j.namer}}})
+	lbInfo := &L7RuntimeInfo{
+		AllowHTTP: true,
+		UrlMap:    gceUrlMap,
+		Ingress:   newIngress(),
+	}
+
+	l7, err := j.pool.Ensure(lbInfo)
+	if err != nil || l7 == nil {
+		t.Fatalf("Expected l7 not created, err: %v", err)
+	}
+	verifyHTTPForwardingRuleAndProxyLinks(t, j, l7, "")
+
+	fws := getForwardingRule(t, j, l7)
+}
+
 func TestCreateHTTPILBLoadBalancer(t *testing.T) {
 	// This should NOT create the forwarding rule and target proxy
 	// associated with the HTTPS branch of this loadbalancer.
@@ -370,6 +393,13 @@ func verifyHTTPSForwardingRuleAndProxyLinks(t *testing.T, j *testJig, l7 *L7) {
 	if fws.Description == "" {
 		t.Errorf("fws.Description not set; expected it to be")
 	}
+	if len(fws.Labels) == 0 {
+		t.Errorf("fws.Labels are empty; expected gke label")
+	} else {
+		if _, ok := fws.Labels[gkeLabel]; !ok {
+			t.Errorf("fws.Labels are non-empty but does not contain the gke label")
+		}
+	}
 }
 
 func verifyHTTPForwardingRuleAndProxyLinks(t *testing.T, j *testJig, l7 *L7, ip string) {
@@ -407,6 +437,31 @@ func verifyHTTPForwardingRuleAndProxyLinks(t *testing.T, j *testJig, l7 *L7, ip 
 			t.Fatalf("fws.IPAddress = %q, want %q", fws.IPAddress, ip)
 		}
 	}
+	if len(fws.Labels) == 0 {
+		t.Errorf("fws.Labels are empty; expected revenue label")
+	} else {
+		if _, ok := fws.Labels[gkeLabel]; !ok {
+			t.Errorf("fws.Labels are non-empty but does not contain the revenue label")
+		}
+	}
+}
+
+func getForwardingRule(t *testing.T, j *testJig, l7 *L7) *composite.ForwardingRule {
+	t.Helper()
+
+	versions := l7.Versions()
+	key, err := composite.CreateKey(j.fakeGCE, l7.namer.UrlMap(), l7.scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fwName := l7.namer.ForwardingRule(namer_util.HTTPProtocol)
+	key.Name = fwName
+	fws, err := composite.GetForwardingRule(j.fakeGCE, key, versions.ForwardingRule, klog.TODO())
+	if err != nil {
+		t.Fatalf("j.fakeGCE.GetGlobalForwardingRule(%q) = _, %v, want nil", fwName, err)
+	}
+	return fws
 }
 
 // Tests that a certificate is created from the provided Key/Cert combo
