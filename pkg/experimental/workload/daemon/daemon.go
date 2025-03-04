@@ -130,9 +130,10 @@ func updateCR(
 }
 
 func getWorkloadCR(workload daemonutils.WorkloadInfo) *workloadv1a1.Workload {
+	name, exist := workload.Name()
 	ret := workloadv1a1.Workload{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   stringOrEmpty(workload.Name()),
+			Name:   stringOrEmpty(name, exist),
 			Labels: workload.Labels(),
 		},
 		Spec: workloadv1a1.WorkloadSpec{

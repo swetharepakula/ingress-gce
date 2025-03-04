@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/klog/v2"
+	klog "k8s.io/klog/v2"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"

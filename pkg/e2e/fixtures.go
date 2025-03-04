@@ -41,7 +41,6 @@ import (
 	computebeta "google.golang.org/api/compute/v0.beta"
 	"google.golang.org/api/compute/v1"
 	apps "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -78,14 +77,14 @@ func NoopModify(*apps.Deployment) {}
 // SpreadPodAcrossZones sets pod anti affinity rules to try to spread pods across zones
 func SpreadPodAcrossZones(deployment *apps.Deployment) {
 	podLabels := deployment.Spec.Template.Labels
-	deployment.Spec.Template.Spec.Affinity = &v1.Affinity{
-		PodAntiAffinity: &v1.PodAntiAffinity{
-			PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+	deployment.Spec.Template.Spec.Affinity = &apiv1.Affinity{
+		PodAntiAffinity: &apiv1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []apiv1.WeightedPodAffinityTerm{
 				{
 					Weight: int32(1),
-					PodAffinityTerm: v1.PodAffinityTerm{
+					PodAffinityTerm: apiv1.PodAffinityTerm{
 						LabelSelector: metav1.SetAsLabelSelector(labels.Set(podLabels)),
-						TopologyKey:   v1.LabelZoneFailureDomainStable,
+						TopologyKey:   apiv1.LabelZoneFailureDomainStable,
 					},
 				},
 			},
@@ -95,58 +94,58 @@ func SpreadPodAcrossZones(deployment *apps.Deployment) {
 
 // CreateEchoService creates the pod and service serving echoheaders
 // Todo: (shance) remove this and replace uses with EnsureEchoService()
-func CreateEchoService(s *Sandbox, name string, annotations map[string]string) (*v1.Service, error) {
-	return EnsureEchoService(s, name, annotations, v1.ServiceTypeNodePort, 1)
+func CreateEchoService(s *Sandbox, name string, annotations map[string]string) (*apiv1.Service, error) {
+	return EnsureEchoService(s, name, annotations, apiv1.ServiceTypeNodePort, 1)
 }
 
 // CreateEchoServiceWithOS creates the pod and service serving echoheaders
 // Todo: (shance) remove this and replace uses with EnsureEchoService()
-func CreateEchoServiceWithOS(s *Sandbox, name string, annotations map[string]string, os OS) (*v1.Service, error) {
-	return ensureEchoService(s, name, annotations, v1.ServiceTypeNodePort, 1, os, map[string]string{})
+func CreateEchoServiceWithOS(s *Sandbox, name string, annotations map[string]string, os OS) (*apiv1.Service, error) {
+	return ensureEchoService(s, name, annotations, apiv1.ServiceTypeNodePort, 1, os, map[string]string{})
 }
 
 // EnsureEchoServiceOS ensures that the Echo service with the given description is set up for Linux or Windows OS.
-func EnsureEchoServiceOS(s *Sandbox, name string, annotations map[string]string, svcType v1.ServiceType, numReplicas int32, os OS) (*v1.Service, error) {
+func EnsureEchoServiceOS(s *Sandbox, name string, annotations map[string]string, svcType apiv1.ServiceType, numReplicas int32, os OS) (*apiv1.Service, error) {
 	return ensureEchoService(s, name, annotations, svcType, numReplicas, os, map[string]string{})
 }
 
-func EnsureEchoServiceWithPodLabels(s *Sandbox, name string, annotations map[string]string, svcType v1.ServiceType, numReplicas int32, podLabels map[string]string) (*v1.Service, error) {
+func EnsureEchoServiceWithPodLabels(s *Sandbox, name string, annotations map[string]string, svcType apiv1.ServiceType, numReplicas int32, podLabels map[string]string) (*apiv1.Service, error) {
 	return ensureEchoService(s, name, annotations, svcType, numReplicas, Linux, podLabels)
 }
 
 // EnsureEchoService that the Echo service with the given description is set up
-func EnsureEchoService(s *Sandbox, name string, annotations map[string]string, svcType v1.ServiceType, numReplicas int32) (*v1.Service, error) {
+func EnsureEchoService(s *Sandbox, name string, annotations map[string]string, svcType apiv1.ServiceType, numReplicas int32) (*apiv1.Service, error) {
 	return ensureEchoService(s, name, annotations, svcType, numReplicas, Linux, map[string]string{})
 }
 
-func ensureEchoService(s *Sandbox, name string, annotations map[string]string, svcType v1.ServiceType, numReplicas int32, os OS, podLabels map[string]string) (*v1.Service, error) {
+func ensureEchoService(s *Sandbox, name string, annotations map[string]string, svcType apiv1.ServiceType, numReplicas int32, os OS, podLabels map[string]string) (*apiv1.Service, error) {
 	if err := ensureEchoDeployment(s, name, numReplicas, NoopModify, os, podLabels); err != nil {
 		return nil, err
 	}
 
-	expectedSvc := &v1.Service{
+	expectedSvc := &apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
 			Annotations: annotations,
 		},
-		Spec: v1.ServiceSpec{
-			Ports: []v1.ServicePort{
+		Spec: apiv1.ServiceSpec{
+			Ports: []apiv1.ServicePort{
 				{
 					Name:       "http-port",
-					Protocol:   v1.ProtocolTCP,
+					Protocol:   apiv1.ProtocolTCP,
 					Port:       80,
 					TargetPort: intstr.FromInt(8080),
 				},
 				{
 					Name:       "https-port",
-					Protocol:   v1.ProtocolTCP,
+					Protocol:   apiv1.ProtocolTCP,
 					Port:       443,
 					TargetPort: intstr.FromInt(8443),
 				},
 			},
 			Selector:   map[string]string{"app": name},
 			Type:       svcType,
-			IPFamilies: []v1.IPFamily{v1.IPv4Protocol},
+			IPFamilies: []apiv1.IPFamily{apiv1.IPv4Protocol},
 		},
 	}
 	svc, err := s.f.Clientset.CoreV1().Services(s.Namespace).Get(context.TODO(), name, metav1.GetOptions{})
@@ -202,42 +201,42 @@ func ensureEchoDeployment(s *Sandbox, name string, numReplicas int32, modify fun
 		image = echoheadersImageWindows
 		nodeSelector = map[string]string{"kubernetes.io/os": "windows"}
 	}
-	podTemplate := v1.PodTemplateSpec{
+	podTemplate := apiv1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   name,
 			Labels: podLabelCopied,
 		},
-		Spec: v1.PodSpec{
+		Spec: apiv1.PodSpec{
 			NodeSelector: nodeSelector,
-			Containers: []v1.Container{
+			Containers: []apiv1.Container{
 				{
 					Name:  "echoheaders",
 					Image: image,
-					Ports: []v1.ContainerPort{
+					Ports: []apiv1.ContainerPort{
 						{ContainerPort: 8080, Name: "http-port"},
 						{ContainerPort: 8443, Name: "https-port"},
 					},
-					Env: []v1.EnvVar{
+					Env: []apiv1.EnvVar{
 						{
 							Name: app.HostEnvVar,
-							ValueFrom: &v1.EnvVarSource{
-								FieldRef: &v1.ObjectFieldSelector{
+							ValueFrom: &apiv1.EnvVarSource{
+								FieldRef: &apiv1.ObjectFieldSelector{
 									FieldPath: "spec.nodeName",
 								},
 							},
 						},
 						{
 							Name: app.PodEnvVar,
-							ValueFrom: &v1.EnvVarSource{
-								FieldRef: &v1.ObjectFieldSelector{
+							ValueFrom: &apiv1.EnvVarSource{
+								FieldRef: &apiv1.ObjectFieldSelector{
 									FieldPath: "metadata.name",
 								},
 							},
 						},
 						{
 							Name: app.NamespaceEnvVar,
-							ValueFrom: &v1.EnvVarSource{
-								FieldRef: &v1.ObjectFieldSelector{
+							ValueFrom: &apiv1.EnvVarSource{
+								FieldRef: &apiv1.ObjectFieldSelector{
 									FieldPath: "metadata.namespace",
 								},
 							},
@@ -245,7 +244,7 @@ func ensureEchoDeployment(s *Sandbox, name string, numReplicas int32, modify fun
 					},
 				},
 			},
-			Tolerations: []v1.Toleration{
+			Tolerations: []apiv1.Toleration{
 				{
 					Key:      "kubernetes.io/arch",
 					Operator: "Equal",
@@ -284,8 +283,8 @@ func ensureEchoDeployment(s *Sandbox, name string, numReplicas int32, modify fun
 }
 
 // CreateSecret creates a secret from the given data.
-func CreateSecret(s *Sandbox, name string, data map[string][]byte) (*v1.Secret, error) {
-	secret := &v1.Secret{
+func CreateSecret(s *Sandbox, name string, data map[string][]byte) (*apiv1.Secret, error) {
+	secret := &apiv1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
@@ -518,7 +517,7 @@ func GetConfigMap(s *Sandbox, namespace, name string) (map[string]string, error)
 
 // EnsureConfigMap ensures the namespace:name ConfigMap Data field, create if the target not exist.
 func EnsureConfigMap(s *Sandbox, namespace, name string, data map[string]string) error {
-	cm := v1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}, Data: data}
+	cm := apiv1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}, Data: data}
 	_, err := s.f.Clientset.CoreV1().ConfigMaps(namespace).Update(context.TODO(), &cm, metav1.UpdateOptions{})
 	if err != nil && errors.IsNotFound(err) {
 		_, err = s.f.Clientset.CoreV1().ConfigMaps(namespace).Create(context.TODO(), &cm, metav1.CreateOptions{})
@@ -577,7 +576,7 @@ func EnsureServiceAttachment(s *Sandbox, saName, svcName, subnetName string) (*s
 		Spec: sav1.ServiceAttachmentSpec{
 			ConnectionPreference: "ACCEPT_AUTOMATIC",
 			NATSubnets:           []string{subnetName},
-			ResourceRef: v1.TypedLocalObjectReference{
+			ResourceRef: apiv1.TypedLocalObjectReference{
 				APIGroup: utilpointer.StringPtr(""),
 				Kind:     "service",
 				Name:     svcName,
@@ -604,7 +603,7 @@ func DeleteServiceAttachment(s *Sandbox, saName string) error {
 // EnsureCustomEndpointSlice ensures that a custom endpoint slice with the
 // given modification is set up. The endpoint slice uses the given list of pods
 // as endpoints.
-func EnsureCustomEndpointSlice(s *Sandbox, svc *v1.Service, name string, pods []v1.Pod, modify func(endpointslice *discoveryv1.EndpointSlice)) (*discoveryv1.EndpointSlice, error) {
+func EnsureCustomEndpointSlice(s *Sandbox, svc *apiv1.Service, name string, pods []apiv1.Pod, modify func(endpointslice *discoveryv1.EndpointSlice)) (*discoveryv1.EndpointSlice, error) {
 	endpointSlice := &discoveryv1.EndpointSlice{
 		AddressType: discoveryv1.AddressType(svc.Spec.IPFamilies[0]),
 		ObjectMeta: metav1.ObjectMeta{
@@ -630,7 +629,7 @@ func EnsureCustomEndpointSlice(s *Sandbox, svc *v1.Service, name string, pods []
 		endpoint := discoveryv1.Endpoint{
 			Addresses: []string{pod.Status.PodIP},
 			NodeName:  &pod.Spec.NodeName,
-			TargetRef: &v1.ObjectReference{
+			TargetRef: &apiv1.ObjectReference{
 				Kind:      "Pod",
 				Namespace: s.Namespace,
 				Name:      pod.Name,
@@ -659,6 +658,6 @@ func EnsureCustomEndpointSlice(s *Sandbox, svc *v1.Service, name string, pods []
 }
 
 // ListPods lists all pods in the sandbox namespace.
-func ListPods(s *Sandbox) (*v1.PodList, error) {
+func ListPods(s *Sandbox) (*apiv1.PodList, error) {
 	return s.f.Clientset.CoreV1().Pods(s.Namespace).List(context.TODO(), metav1.ListOptions{})
 }
