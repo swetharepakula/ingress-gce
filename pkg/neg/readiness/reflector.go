@@ -80,10 +80,14 @@ type readinessReflector struct {
 	// subnet as ready without processing.
 	enableMultiSubnetCluster bool
 
+	// If enabled, the endpoints from non default subnet are treated the same
+	// default subnets.
+	enableMSCPhase1 bool
+
 	logger klog.Logger
 }
 
-func NewReadinessReflector(kubeClient, eventRecorderClient kubernetes.Interface, podLister cache.Indexer, negCloud negtypes.NetworkEndpointGroupCloud, lookup NegLookup, zoneGetter *zonegetter.ZoneGetter, enableDualStackNEG, enableMultiSubnetCluster bool, logger klog.Logger) Reflector {
+func NewReadinessReflector(kubeClient, eventRecorderClient kubernetes.Interface, podLister cache.Indexer, negCloud negtypes.NetworkEndpointGroupCloud, lookup NegLookup, zoneGetter *zonegetter.ZoneGetter, enableDualStackNEG, enableMultiSubnetCluster, enableMSCPhase1 bool, logger klog.Logger) Reflector {
 	broadcaster := record.NewBroadcaster()
 	broadcaster.StartLogging(klog.Infof)
 	broadcaster.StartRecordingToSink(&unversionedcore.EventSinkImpl{
@@ -100,6 +104,7 @@ func NewReadinessReflector(kubeClient, eventRecorderClient kubernetes.Interface,
 		queue:                    workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
 		zoneGetter:               zoneGetter,
 		enableMultiSubnetCluster: enableMultiSubnetCluster,
+		enableMSCPhase1:          enableMSCPhase1,
 		logger:                   logger,
 	}
 	poller := NewPoller(podLister, lookup, reflector, negCloud, enableDualStackNEG, logger)

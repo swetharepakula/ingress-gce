@@ -198,6 +198,8 @@ func NewController(
 		lpConfig,
 		logger)
 
+	enableMultiSubnetClusterPhase1 := flags.F.EnableMultiSubnetClusterPhase1
+
 	var reflector readiness.Reflector
 	if enableReadinessReflector {
 		reflector = readiness.NewReadinessReflector(
@@ -209,6 +211,7 @@ func NewController(
 			zoneGetter,
 			enableDualStackNEG,
 			flags.F.EnableMultiSubnetCluster,
+			enableMultiSubnetClusterPhase1,
 			logger,
 		)
 	} else {
@@ -224,7 +227,6 @@ func NewController(
 	if gkeNetworkParamSetInformer != nil {
 		gkeNetworkParamSetIndexer = gkeNetworkParamSetInformer.GetIndexer()
 	}
-	enableMultiSubnetClusterPhase1 := flags.F.EnableMultiSubnetClusterPhase1
 
 	negController := &Controller{
 		client:                         kubeClient,
